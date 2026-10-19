@@ -12,6 +12,7 @@ const LINKS = [
   { href: "/lookups", label: "Lookups" },
   { href: "/quickbooks", label: "QuickBooks" },
   { href: "/zoho-sync", label: "Zoho Sync" },
+  { href: "/freight-desk", label: "Freight Desk" },
 ];
 
 export default function NavLinks() {
