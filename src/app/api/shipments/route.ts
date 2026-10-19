@@ -3,7 +3,7 @@ import { z } from "zod";
 import { DomesticType, ShipmentStatus, IncoTerms, TypeOfService, PaymentMethod, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/session";
-import { generateFileNumber } from "@/lib/numbering";
+import { generateShipmentFileNumber } from "@/lib/numbering";
 import { ZOHO_DIVISION_ID, ZOHO_BUS_LINE } from "@/lib/zohoShipmentSync";
 import { dollarsToCents } from "@/lib/money";
 import { autoCreateInvoiceForShipment, computeShipmentTotalChargesCents } from "@/lib/billing";
@@ -260,7 +260,8 @@ export async function POST(request: Request) {
 
   const divisionId = data.divisionId ?? ZOHO_DIVISION_ID;
   const busLine = data.busLine ?? ZOHO_BUS_LINE;
-  const fileNumber = await generateFileNumber(divisionId, busLine);
+  // Same series as Zoho-created shipments (101060000, ...), whatever the division/bus line.
+  const fileNumber = await generateShipmentFileNumber();
 
   const shipment = await prisma.domesticWarehouseShipment.create({
     data: {

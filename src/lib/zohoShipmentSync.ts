@@ -2,7 +2,7 @@ import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { findOrCreateClient } from "@/lib/clientService";
 import { autoGeneratePickupBol } from "@/lib/pickupBol";
-import { generateFileNumber } from "@/lib/numbering";
+import { generateChildFileNumber, generateShipmentFileNumber } from "@/lib/numbering";
 import {
   buildTruncatedDraft,
   resolveCustomFields,
@@ -23,11 +23,11 @@ import { notifyZohoTicketOfFileGenerated } from "@/lib/zohoOrderNotification";
 /**
  * Division/line-of-business constants used both when auto-creating shipments from
  * Zoho tickets AND as the default for shipments created via the UI (see
- * src/app/api/shipments/route.ts). fileNumber is generated as
- * `${divisionId}${busLine}${10000+n}` (see src/lib/numbering.ts) — divisionId=99,
- * busLine=65 means every new Domestic Warehouse file number starts `9965...`.
- * Existing shipments already numbered `2065...` are untouched — this only changes
- * the prefix used for numbers generated from here on.
+ * src/app/api/shipments/route.ts). They're stored on the shipment (and copied onto its
+ * invoices) but no longer drive the file number: since 2026-10 new shipments are numbered
+ * 101060000, 101060001, ... and child shipments parent-1, parent-2, ... (see
+ * generateShipmentFileNumber / generateChildFileNumber in src/lib/numbering.ts). Older
+ * `9965...` / `2065...` numbers are untouched.
  */
 export const ZOHO_DIVISION_ID = 99;
 export const ZOHO_BUS_LINE = 65;
@@ -303,7 +303,10 @@ export async function createShipmentForTicket(
   const ticketSubject = meta.subject || undefined;
   const status = mapZohoStatusToShipmentStatus(meta.status) ?? "OPEN";
 
-  const fileNumber = await generateFileNumber(ZOHO_DIVISION_ID, ZOHO_BUS_LINE);
+  // A child is numbered after its parent (101060000-1, -2, ...). A child whose parent's
+  // shipment doesn't exist yet gets a regular number; it's still linked once the parent
+  // arrives (adoptWaitingChildren), but keeps that number.
+  const fileNumber = parent ? await generateChildFileNumber(parent.fileNumber) : await generateShipmentFileNumber();
 
   const shipment = await prisma.domesticWarehouseShipment.create({
     data: {

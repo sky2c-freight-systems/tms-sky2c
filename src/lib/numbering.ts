@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
  * in the Zoho webhook handler) with subtly different bugs — most notably relying on
  * "scan for max existing value, then +1" with no locking, which races under concurrent
  * requests. This module fixes that with a Counter collection: each numbering "scope"
- * (e.g. "client:Imaan", "file:6060", "quote") gets an atomically-incremented counter,
+ * (e.g. "client:Imaan", "file:1010", "child:101060000", "quote") gets an atomically-incremented counter,
  * seeded from the highest existing value in the underlying collection the first time
  * that scope is used (matching the legacy semantics of "start after whatever already
  * exists"), then purely atomic afterward.
@@ -78,29 +78,53 @@ export async function generateClientId(clientName: string): Promise<string> {
   return `${prefix}${suffix}`;
 }
 
-async function seedFileNumberSuffix(prefix: string): Promise<number> {
+/**
+ * Shipment file-number series since 2026-10: "1010" followed by a counter starting at
+ * 60000 (101060000, 101060001, ...). Older shipments keep their `${divisionId}${busLine}…`
+ * numbers (e.g. 9965…); the shipment's divisionId/busLine columns are unchanged.
+ */
+const FILE_SERIES_PREFIX = "1010";
+const FILE_SERIES_FIRST = 60000;
+
+async function seedFileSeries(): Promise<number> {
   const existing = await prisma.domesticWarehouseShipment.findMany({
-    where: { fileNumber: { startsWith: prefix } },
+    where: { fileNumber: { startsWith: FILE_SERIES_PREFIX } },
     select: { fileNumber: true },
   });
-  const suffixPattern = new RegExp(`^${escapeRegex(prefix)}(\\d+)$`);
-  let max = 9999; // so that with no existing rows, the first generated number is `${prefix}10000`
+  const pattern = new RegExp(`^${FILE_SERIES_PREFIX}(\\d+)$`);
+  let max = FILE_SERIES_FIRST - 1;
   for (const { fileNumber } of existing) {
-    const match = fileNumber.match(suffixPattern);
+    const match = fileNumber.match(pattern);
     if (match) max = Math.max(max, parseInt(match[1], 10));
   }
   return max;
 }
 
-/**
- * Generates the next shipment `fileNumber`: `${divisionId}${busLine}${10000+n}`.
- * Used by both the shipment-entry UI and the Zoho ticket-created webhook — the exact
- * same code path, so file numbers never collide regardless of which caller created them.
- */
-export async function generateFileNumber(divisionId: number, busLine: number): Promise<string> {
-  const prefix = `${divisionId}${busLine}`;
-  const suffix = await nextInScope(`file:${prefix}`, () => seedFileNumberSuffix(prefix));
-  return `${prefix}${suffix}`;
+/** Next file number for a new (top-level) shipment: 101060000, 101060001, ... */
+export async function generateShipmentFileNumber(): Promise<string> {
+  const suffix = await nextInScope(`file:${FILE_SERIES_PREFIX}`, seedFileSeries);
+  return `${FILE_SERIES_PREFIX}${suffix}`;
+}
+
+async function seedChildSuffix(parentFileNumber: string): Promise<number> {
+  const existing = await prisma.domesticWarehouseShipment.findMany({
+    // Escaped: Prisma's MongoDB startsWith is an unescaped regex (see src/lib/mongoText.ts).
+    where: { fileNumber: { startsWith: `${escapeRegex(parentFileNumber)}-` } },
+    select: { fileNumber: true },
+  });
+  const pattern = new RegExp(`^${escapeRegex(parentFileNumber)}-(\\d+)$`);
+  let max = 0;
+  for (const { fileNumber } of existing) {
+    const match = fileNumber.match(pattern);
+    if (match) max = Math.max(max, parseInt(match[1], 10));
+  }
+  return max;
+}
+
+/** Next file number for a child shipment: the parent's number plus -1, -2, ... */
+export async function generateChildFileNumber(parentFileNumber: string): Promise<string> {
+  const suffix = await nextInScope(`child:${parentFileNumber}`, () => seedChildSuffix(parentFileNumber));
+  return `${parentFileNumber}-${suffix}`;
 }
 
 async function seedQuoteNumber(): Promise<number> {
