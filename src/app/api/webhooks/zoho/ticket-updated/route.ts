@@ -180,10 +180,7 @@ export async function POST(request: Request) {
 
     const draft = buildTruncatedDraft(payload);
 
-    const originChanged = currentFields.origin !== prevFields.origin;
-    const destinationChanged = currentFields.destination !== prevFields.destination;
     const accountNameChanged = currentFields.accountName !== prevFields.accountName;
-    const shouldReResolveParties = originChanged || destinationChanged || accountNameChanged;
 
     const updateData: Prisma.DomesticWarehouseShipmentUpdateInput = {
       origin: draft.origin,
@@ -232,26 +229,27 @@ export async function POST(request: Request) {
       updateData.carrierId = carrier.id;
     }
 
-    if (shouldReResolveParties) {
-      const [account, shipper, consignee] = await Promise.all([
-        draft.accountName
-          ? findOrCreateClient({
-              name: draft.accountName,
-              role: "ACCOUNT",
-              emailAddress: draft.contactEmail,
-              telephone: draft.contactPhone,
-            })
-          : Promise.resolve(null),
-        draft.shipperName ? findOrCreateClient({ name: draft.shipperName, role: "SHIPPER" }) : Promise.resolve(null),
-        draft.consigneeName
-          ? findOrCreateClient({ name: draft.consigneeName, role: "CONSIGNEE" })
-          : Promise.resolve(null),
-      ]);
-      // A child keeps the parent's account — its own contact is a department mailbox.
-      if (account && !isChild) updateData.accountId = account.id;
-      if (shipper) updateData.shipperId = shipper.id;
-      if (consignee) updateData.consigneeId = consignee.id;
-    }
+    // Shipper (Pickup Location) and Consignee (Destination Address) are re-resolved on every
+    // update, so a shipment whose parties were set the old way (from the port codes) is
+    // corrected by its next ticket update. The account only when its name changed.
+    const [account, shipper, consignee] = await Promise.all([
+      accountNameChanged && draft.accountName
+        ? findOrCreateClient({
+            name: draft.accountName,
+            role: "ACCOUNT",
+            emailAddress: draft.contactEmail,
+            telephone: draft.contactPhone,
+          })
+        : Promise.resolve(null),
+      draft.shipperName ? findOrCreateClient({ name: draft.shipperName, role: "SHIPPER" }) : Promise.resolve(null),
+      draft.consigneeName ? findOrCreateClient({ name: draft.consigneeName, role: "CONSIGNEE" }) : Promise.resolve(null),
+    ]);
+    // A child keeps the parent's account — its own contact is a department mailbox.
+    if (account && !isChild) updateData.accountId = account.id;
+    // Zoho is the source of truth: an empty Pickup Location / Destination Address clears the
+    // party rather than keeping one set the old way from a port code.
+    updateData.shipperId = shipper?.id ?? null;
+    updateData.consigneeId = consignee?.id ?? null;
 
     const updatedShipment = await prisma.domesticWarehouseShipment.update({
       where: { fileNumber: syncRow.fileNumber },

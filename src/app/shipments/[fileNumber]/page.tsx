@@ -6,6 +6,7 @@ import Link from "next/link";
 import ShipmentForm, { EMPTY_SHIPMENT_FORM_VALUES, shipmentToFormValues, type ShipmentFormValues } from "@/components/ShipmentForm";
 import Spinner from "@/components/Spinner";
 import PickupBolPanel from "@/components/PickupBolPanel";
+import HawbPanel from "@/components/HawbPanel";
 import { SHIPMENT_STATUS_LABELS } from "@/lib/enumLabels";
 
 interface FamilyMember {
@@ -25,6 +26,7 @@ export default function ShipmentEditPage() {
   const [parent, setParent] = useState<FamilyMember | null>(null);
   const [children, setChildren] = useState<FamilyMember[]>([]);
   const [isDispatch, setIsDispatch] = useState(false);
+  const [isAirOps, setIsAirOps] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,12 +39,13 @@ export default function ShipmentEditPage() {
           return;
         }
         if (!res.ok) throw new Error("Failed to load shipment");
-        const { data, parent, children, isDispatch } = await res.json();
+        const { data, parent, children, isDispatch, isAirOps } = await res.json();
         if (!cancelled) {
           setValues(shipmentToFormValues(data));
           setParent(parent ?? null);
           setChildren(children ?? []);
           setIsDispatch(!!isDispatch);
+          setIsAirOps(!!isAirOps);
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load shipment");
@@ -109,6 +112,7 @@ export default function ShipmentEditPage() {
         <>
           {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
           {isDispatch && <PickupBolPanel fileNumber={fileNumber} />}
+          {isAirOps && <HawbPanel fileNumber={fileNumber} />}
           <ShipmentForm mode="edit" fileNumber={fileNumber} initialValues={values} />
         </>
       )}
