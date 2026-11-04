@@ -62,7 +62,8 @@ export async function getMissingPickupBolFields(shipment: DomesticWarehouseShipm
 }
 
 function fileNameFor(reference: string): string {
-  const stamp = new Date().toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+  // yyyymmdd-hhmmss (UTC); seconds keep two BOLs generated in the same minute apart.
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
   return `BOL_${reference.replace(/[^\w.-]+/g, "_")}_${stamp}.pdf`;
 }
 
