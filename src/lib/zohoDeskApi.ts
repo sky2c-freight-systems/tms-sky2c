@@ -171,6 +171,29 @@ export async function updateTicket(ticketId: string, payload: Record<string, unk
 }
 
 /**
+ * AfterShip tracking updates (src/lib/aftershipZohoSync.ts) have their own gate,
+ * AFTERSHIP_ZOHO_UPDATE_ENABLED, so they can be turned on without the fileNumber/status
+ * push-back that ZOHO_DESK_PUSH_ENABLED controls. Callers check it and dry-run when off.
+ */
+export function isAftershipZohoUpdateEnabled(): boolean {
+  return process.env.AFTERSHIP_ZOHO_UPDATE_ENABLED === "true";
+}
+
+/** PATCHes ticket custom fields for an AfterShip update. No-op unless that gate is on. */
+export async function updateTicketFieldsFromAftership(ticketId: string, cf: Record<string, string>): Promise<void> {
+  if (!isAftershipZohoUpdateEnabled()) return;
+  await zohoDeskRequest("PATCH", `/api/v1/tickets/${encodeURIComponent(ticketId)}`, { body: { cf } });
+}
+
+/** Adds a private (agent-only) plain-text comment to a ticket. No-op unless the AfterShip gate is on. */
+export async function addPrivateTicketComment(ticketId: string, content: string): Promise<void> {
+  if (!isAftershipZohoUpdateEnabled()) return;
+  await zohoDeskRequest("POST", `/api/v1/tickets/${encodeURIComponent(ticketId)}/comments`, {
+    body: { isPublic: false, contentType: "plainText", content },
+  });
+}
+
+/**
  * Pushes the generated shipment fileNumber onto the originating ticket's custom
  * "Reference Number" field. Best-effort by design — callers should catch and log
  * rather than let this block shipment creation, same philosophy as the rest of the

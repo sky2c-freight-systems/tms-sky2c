@@ -679,6 +679,21 @@ model ZohoSync {
   @@index([syncStatus])
 }
 
+/// One AfterShip tracking (keyed by its normalized tracking number = the shipment's Pro
+/// Number) and what was last written to its Zoho ticket, so repeat webhooks only touch
+/// Zoho when something changed — see src/lib/aftershipZohoSync.ts.
+model AftershipTracking {
+  id             String    @id @default(auto()) @map("_id") @db.ObjectId
+  trackingNumber String    @unique
+  shipmentId     String?   @db.ObjectId
+  zohoTicketId   String?
+  lastTag        String? // AfterShip status last posted as a private comment
+  lastPickupAt   DateTime?
+  lastEtaAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
 // ---------------------------------------------------------------------------
 // Customer portal (OTP-based login, no password) — see src/lib/otp.ts,
 // src/lib/customerSession.ts, src/app/customer/*, src/app/api/customer/*
