@@ -112,8 +112,24 @@ describe("syncAftershipToZoho", () => {
     expect(zoho.comments).toHaveLength(1);
     expect(zoho.comments[0][0]).toBe("T-1");
     expect(zoho.comments[0][1]).toBe(
-      "AfterShip update: In Transit\nDeparted terminal\nWALLINGFORD, CT · 5 Nov 2026 22:40\nCarrier: ESTES · Tracking: 888219312"
+      "<div><b>SCOM - Automatic</b></div>" +
+        "<div><br></div>" +
+        "<div><b>AfterShip Status :</b> In Transit</div>" +
+        "<div><b>Latest checkpoint message :</b> Departed terminal</div>" +
+        "<div><b>Checkpoint Time :</b> 5 Nov 2026 22:40</div>" +
+        "<div><b>Location :</b> WALLINGFORD, CT</div>" +
+        "<div><b>Carrier :</b> ESTES</div>" +
+        "<div><b>Tracking :</b> 888219312</div>"
     );
+  });
+
+  it("shows '-' for a missing checkpoint and escapes HTML in AfterShip values", async () => {
+    await syncAftershipToZoho(webhook({ checkpoints: [], subtag_message: "<script>x</script> & co" }));
+    const comment = zoho.comments[0][1];
+    expect(comment).toContain("<b>AfterShip Status :</b> &lt;script&gt;x&lt;/script&gt; &amp; co</div>");
+    expect(comment).toContain("<b>Latest checkpoint message :</b> -</div>");
+    expect(comment).toContain("<b>Checkpoint Time :</b> -</div>");
+    expect(comment).toContain("<b>Location :</b> -</div>");
   });
 
   it("uses the Port fields for Dispatch to Port and Warehouse to Port", async () => {
@@ -145,7 +161,7 @@ describe("syncAftershipToZoho", () => {
       webhook({ tag: "Delivered", subtag_message: "Delivered", latest_estimated_delivery: { datetime: "2026-11-08" } })
     );
     expect(zoho.fields).toEqual([["T-1", { cf_eta_at_warehouse: "2026-11-08T08:00:00.000Z" }]]);
-    expect(zoho.comments[0][1]).toMatch(/^AfterShip update: Delivered/);
+    expect(zoho.comments[0][1]).toContain("<b>AfterShip Status :</b> Delivered</div>");
   });
 
   it("falls back to the end of the ETA range, then the courier's ETA", async () => {

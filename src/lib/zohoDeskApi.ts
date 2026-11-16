@@ -185,11 +185,11 @@ export async function updateTicketFieldsFromAftership(ticketId: string, cf: Reco
   await zohoDeskRequest("PATCH", `/api/v1/tickets/${encodeURIComponent(ticketId)}`, { body: { cf } });
 }
 
-/** Adds a private (agent-only) plain-text comment to a ticket. No-op unless the AfterShip gate is on. */
+/** Adds a private (agent-only) HTML comment to a ticket. No-op unless the AfterShip gate is on. */
 export async function addPrivateTicketComment(ticketId: string, content: string): Promise<void> {
   if (!isAftershipZohoUpdateEnabled()) return;
   await zohoDeskRequest("POST", `/api/v1/tickets/${encodeURIComponent(ticketId)}/comments`, {
-    body: { isPublic: false, contentType: "plainText", content },
+    body: { isPublic: false, contentType: "html", content },
   });
 }
 

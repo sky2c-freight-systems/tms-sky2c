@@ -113,17 +113,33 @@ function checkpointTime(value: string): string {
   return `${Number(m[3])} ${months.at(Number(m[2]) - 1)} ${m[1]} ${m[4]}:${m[5]}`;
 }
 
-/** The private comment posted on a status change. */
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * The private comment posted on a status change, as HTML (Zoho Desk renders it): a bold
+ * "SCOM - Automatic" heading, a blank line, then one "<b>Label :</b> value" line per field.
+ * A value AfterShip didn't send shows as "-".
+ */
 export function buildStatusComment(msg: Obj): string {
   const checkpoints = Array.isArray(msg.checkpoints) ? msg.checkpoints : [];
   const last = obj(checkpoints.at(-1));
   const where = str(last.location) || [str(last.city), str(last.state)].filter(Boolean).join(", ");
   const when = str(last.checkpoint_time) ? checkpointTime(str(last.checkpoint_time)) : "";
-  const lines = [`AfterShip update: ${statusLabel(msg)}`];
-  if (str(last.message)) lines.push(str(last.message));
-  if (where || when) lines.push([where, when].filter(Boolean).join(" · "));
-  lines.push(`Carrier: ${str(msg.slug).toUpperCase() || "?"} · Tracking: ${str(msg.tracking_number)}`);
-  return lines.join("\n");
+  const rows: [string, string][] = [
+    ["AfterShip Status", statusLabel(msg)],
+    ["Latest checkpoint message", str(last.message)],
+    ["Checkpoint Time", when],
+    ["Location", where],
+    ["Carrier", str(msg.slug).toUpperCase()],
+    ["Tracking", str(msg.tracking_number)],
+  ];
+  return [
+    "<div><b>SCOM - Automatic</b></div>",
+    "<div><br></div>",
+    ...rows.map(([label, value]) => `<div><b>${label} :</b> ${escapeHtml(value || "-")}</div>`),
+  ].join("");
 }
 
 interface Match {
