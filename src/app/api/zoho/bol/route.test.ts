@@ -127,6 +127,18 @@ describe("auth", () => {
   });
 });
 
+describe("BOL file name", async () => {
+  const { fileNameFor } = await import("@/lib/pickupBol");
+  it("uses readable IST date and 12-hour time", () => {
+    // 17:30:12 UTC = 11:00:12 PM IST (UTC+5:30)
+    expect(fileNameFor("1010553981", new Date("2026-11-13T17:30:12Z"))).toBe("BOL_1010553981_13-Nov-2026_11-00-12-PM_IST.pdf");
+    // 03:05:09 UTC = 08:35:09 AM IST
+    expect(fileNameFor("SO 77/A", new Date("2026-07-01T03:05:09Z"))).toBe("BOL_SO_77_A_01-Jul-2026_08-35-09-AM_IST.pdf");
+    // 18:30 UTC = 12:00 AM IST next day
+    expect(fileNameFor("X", new Date("2026-12-31T18:30:00Z"))).toBe("BOL_X_01-Jan-2027_12-00-00-AM_IST.pdf");
+  });
+});
+
 describe("POST /api/zoho/bol", () => {
   it("returns bolId, fileName, createdAt and a base64 PDF", async () => {
     const res = await post({ ticketNumber: "227400" });
@@ -134,7 +146,7 @@ describe("POST /api/zoho/bol", () => {
     const json = await res.json();
     expect(Object.keys(json).sort()).toEqual(["bolId", "createdAt", "fileName", "pdfBase64"]);
     expect(json.bolId).toBe(db.docs[0].id);
-    expect(json.fileName).toMatch(/^BOL_1010553981_\d{8}-\d{6}\.pdf$/);
+    expect(json.fileName).toMatch(/^BOL_1010553981_\d{2}-[A-Z][a-z]{2}-\d{4}_\d{2}-\d{2}-\d{2}-(AM|PM)_IST\.pdf$/);
     expect(new Date(json.createdAt).toISOString()).toBe(json.createdAt);
     expect(Buffer.from(json.pdfBase64, "base64").subarray(0, 4).toString()).toBe("%PDF");
   });

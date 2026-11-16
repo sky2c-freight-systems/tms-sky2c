@@ -61,9 +61,27 @@ export async function getMissingPickupBolFields(shipment: DomesticWarehouseShipm
   return missingPickupBolFields(shipment, await carrierClientName(shipment));
 }
 
-function fileNameFor(reference: string): string {
-  // yyyymmdd-hhmmss (UTC); seconds keep two BOLs generated in the same minute apart.
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:]/g, "").replace("T", "-");
+/**
+ * "BOL_<reference>_13-Nov-2026_11-00-12-PM_IST.pdf": generation time in India time (IST,
+ * no DST), readable date and 12-hour time. "-" instead of ":" because file names can't
+ * have colons; seconds keep two BOLs generated in the same minute apart.
+ */
+export function fileNameFor(reference: string, at: Date = new Date()): string {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Kolkata",
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    })
+      .formatToParts(at)
+      .map((part) => [part.type, part.value])
+  );
+  const stamp = `${p.day}-${p.month}-${p.year}_${p.hour}-${p.minute}-${p.second}-${p.dayPeriod.toUpperCase()}_IST`;
   return `BOL_${reference.replace(/[^\w.-]+/g, "_")}_${stamp}.pdf`;
 }
 
