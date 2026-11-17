@@ -248,7 +248,7 @@ export default function ShipmentsPage() {
       <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center">
         <input
           className="w-full max-w-sm rounded border border-zinc-300 px-2.5 py-1.5 text-sm dark:border-zinc-700 dark:bg-brand"
-          placeholder="Search by file number, Zoho ticket, origin, or destination..."
+          placeholder="Search by file number, ref number, Zoho ticket, origin, or destination..."
           value={q}
           onChange={(e) => {
             setQ(e.target.value);
