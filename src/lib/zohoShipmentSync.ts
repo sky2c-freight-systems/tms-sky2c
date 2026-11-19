@@ -255,11 +255,10 @@ export async function claimRecreationForTicket(
  * webhook (when it discovers no shipment exists yet for a ticket it's seeing an update
  * for — treated like a first-time create per the integration spec).
  *
- * Per the shipper/consignee fallback rule (and the clientService.ts "don't double-print
- * the address" bug fix), Shipper/Consignee are resolved by name only — never with an
- * `address` param — since this ticket layout has no separate address field for either
- * role; when their name resolves to the Origin/Destination text via fallback, that text
- * must not ALSO be stored as street address.
+ * Shipper and Consignee clients are named after the ticket's Pickup Location and
+ * Destination Address (see mapCustomFieldsToDraft) and resolved by name only — never with
+ * an `address` param, since that text already is the address (the clientService.ts "don't
+ * double-print the address" fix). Neither falls back to the port codes.
  *
  * After the shipment is created, the generated fileNumber is pushed back onto the
  * originating ticket's "Reference Number" field in Zoho Desk — best-effort: a failure

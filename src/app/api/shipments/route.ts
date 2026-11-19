@@ -65,7 +65,16 @@ export async function GET(request: Request) {
       },
       select: { fileNumber: true },
     });
-    const matchingFileNumbers = matchingSyncRows.map((r) => r.fileNumber as string);
+    // Ref Number (Zoho cf_ref_number) lives inside the zohoFields JSON, which Prisma can't
+    // filter by path on MongoDB, so it's matched with a raw query and folded in the same way.
+    const matchingRefRows = (await prisma.domesticWarehouseShipment.findRaw({
+      filter: { "zohoFields.cf_ref_number": { $regex: escapeRegex(q), $options: "i" } },
+      options: { projection: { fileNumber: 1 } },
+    })) as unknown as { fileNumber?: string }[];
+    const matchingFileNumbers = [
+      ...matchingSyncRows.map((r) => r.fileNumber as string),
+      ...matchingRefRows.map((r) => r.fileNumber).filter((f): f is string => !!f),
+    ];
 
     where.OR = [
       { fileNumber: { contains: escapeRegex(q), mode: "insensitive" } },

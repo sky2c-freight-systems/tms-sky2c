@@ -11,9 +11,13 @@ import type { CustomerSessionData } from "@/lib/customerSession";
 
 const PUBLIC_PATHS = ["/login", "/api/auth/login"];
 
-// Zoho/QuickBooks webhook endpoints authenticate themselves (shared-secret header /
+// Zoho/AfterShip/QuickBooks webhook endpoints authenticate themselves (shared-secret header /
 // OAuth callback) rather than via the interactive session cookie — see each route.
-const WEBHOOK_PREFIXES = ["/api/webhooks/zoho", "/api/quickbooks/callback"];
+const WEBHOOK_PREFIXES = ["/api/webhooks/zoho", "/api/webhooks/aftership", "/api/quickbooks/callback"];
+
+// Zoho Desk widget API: authenticated by the X-API-Key header inside each route
+// (src/lib/zohoWidgetAuth.ts). The key is checked only there, so it opens nothing else.
+const ZOHO_WIDGET_PREFIX = "/api/zoho/";
 
 // Customer-facing shipment tracking, intentionally reachable without a login the same
 // way any carrier's tracking page is. The route itself returns only milestone/routing
@@ -46,6 +50,7 @@ export async function middleware(request: NextRequest) {
     PUBLIC_PATHS.includes(pathname) ||
     WEBHOOK_PREFIXES.some((p) => pathname.startsWith(p)) ||
     AES_RETURN_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
+    pathname.startsWith(ZOHO_WIDGET_PREFIX) ||
     PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
     CUSTOMER_PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
     pathname.startsWith("/_next") ||

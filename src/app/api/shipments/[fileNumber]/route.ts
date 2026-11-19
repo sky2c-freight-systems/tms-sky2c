@@ -11,6 +11,7 @@ import { recordStatusChange } from "@/lib/tracking";
 import { extraFieldsToPrismaData, extraFieldsZodShape } from "@/lib/shipmentZohoSections";
 import { sanitizeZohoFields } from "@/lib/shipmentLayoutFields";
 import { isDispatchShipment } from "@/lib/pickupBol";
+import { isAirOpsShipment } from "@/lib/hawb";
 
 const SHIPMENT_STATUS_VALUES = Object.values(ShipmentStatus) as [ShipmentStatus, ...ShipmentStatus[]];
 const DOMESTIC_TYPE_VALUES = Object.values(DomesticType) as [DomesticType, ...DomesticType[]];
@@ -43,7 +44,9 @@ export async function GET(_request: Request, { params }: { params: Promise<{ fil
     }),
   ]);
 
-  return NextResponse.json({ data: shipment, parent, children, isDispatch: isDispatchShipment(shipment) });
+  return NextResponse.json({ data: shipment, parent, children, isDispatch: isDispatchShipment(shipment),
+    isAirOps: isAirOpsShipment(shipment),
+  });
 }
 
 const dollarAmount = z.union([z.string(), z.number()]).nullish();

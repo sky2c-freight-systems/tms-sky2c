@@ -64,16 +64,24 @@ function fmt3(n: number): string {
  * rows, one per N@LxWxH group — the same token format the Zoho volumetric-weight function
  * parses. The commodity and total gross weight go on the first row, as on the paper BOL.
  */
-function cargoRows(pallets: string, commodity: string, grossWeight: number | null): PickupBolRow[] {
+/**
+ * HM (hazardous materials) column: "YES" when Zoho's Stackable and Turnable
+ * (cf_stackable_and_turnable) includes "Hazardous/DG", otherwise "NO".
+ */
+function hazmatFlag(stackableTurnable: string[]): string {
+  return stackableTurnable.some((v) => v.trim().toLowerCase() === "hazardous/dg") ? "YES" : "NO";
+}
+
+function cargoRows(pallets: string, commodity: string, grossWeight: number | null, hazmat: string): PickupBolRow[] {
   const groups = [...pallets.matchAll(/(\d+)\s*@\s*([\d.]+)\s*[x*]\s*([\d.]+)\s*[x*]\s*([\d.]+)/gi)];
   const weight = grossWeight !== null ? `${grossWeight} LBS` : "";
   if (groups.length === 0) {
     if (!commodity && !weight && !pallets.trim()) return [];
-    return [{ units: "", hazmat: "NO", description: commodity, weight, dimensions: pallets.trim() }];
+    return [{ units: "", hazmat, description: commodity, weight, dimensions: pallets.trim() }];
   }
   return groups.map((g, i) => ({
     units: g[1],
-    hazmat: "NO",
+    hazmat,
     description: i === 0 ? commodity : "",
     weight: i === 0 ? weight : "",
     dimensions: `${g[1]} @ ${fmt3(Number(g[2]))} x ${fmt3(Number(g[3]))} x ${fmt3(Number(g[4]))} IN`,
@@ -115,7 +123,12 @@ export function buildPickupBolData(
     consignee: toPort ? portDrop : warehouse,
     // Not mapped to any Zoho field — printed blank, as on the paper BOL.
     customerRef: "",
-    rows: cargoRows(str(shipment.palletsDimensions), str(shipment.cargoDescription), shipment.grossWeight),
+    rows: cargoRows(
+      str(shipment.palletsDimensions),
+      str(shipment.cargoDescription),
+      shipment.grossWeight,
+      hazmatFlag(shipment.stackableTurnable ?? [])
+    ),
   };
 }
 

@@ -203,8 +203,10 @@ export interface RawShipmentFields {
 /** Applies the field-mapping table (see integration spec) to a resolved custom-fields object. Raw/untruncated — callers truncate before persisting. */
 export function mapCustomFieldsToDraft(cf: Record<string, unknown>): RawShipmentFields {
   return {
-    shipperName: firstNonEmpty(cf, "cf_shipper"),
-    consigneeName: firstNonEmpty(cf, "cf_consignee"),
+    // Shipper / Consignee clients come from the ticket's Pickup Location and Destination
+    // Address — never the Origin / Destination port codes.
+    shipperName: firstNonEmpty(cf, "cf_pickup_location"),
+    consigneeName: firstNonEmpty(cf, "cf_destination_address"),
     origin: firstNonEmpty(cf, "cf_origin", "cf_pickup_location", "cf_pickup_address"),
     destination: firstNonEmpty(cf, "cf_destination", "cf_delivery_location", "cf_delivery_address"),
     carrier: firstNonEmpty(cf, "cf_carrier", "cf_carrier_name", "cf_carrier_name_1"),
@@ -228,9 +230,9 @@ export interface ComparableShipmentFields {
   destination: string;
   carrier: string;
   shipDateRaw: string;
-  /** Fallback-applied: cf_shipper, or Origin text when cf_shipper is empty. */
+  /** cf_pickup_location (Pickup Location). */
   shipperName: string;
-  /** Fallback-applied: cf_consignee, or Destination text when cf_consignee is empty. */
+  /** cf_destination_address (Destination Address). */
   consigneeName: string;
   accountName: string;
 }
@@ -250,8 +252,8 @@ export function buildComparableFields(node: unknown): ComparableShipmentFields {
     destination: raw.destination,
     carrier: raw.carrier,
     shipDateRaw: raw.shipDateRaw,
-    shipperName: raw.shipperName || raw.origin,
-    consigneeName: raw.consigneeName || raw.destination,
+    shipperName: raw.shipperName,
+    consigneeName: raw.consigneeName,
     accountName: contact.accountName,
   };
 }
@@ -268,9 +270,9 @@ export interface TruncatedShipmentDraft {
   domesticType: DomesticType;
   totalChargesCents: number | null;
   shipAt: Date | null;
-  /** Shipper client name — cf_shipper, or (per the shipper/consignee fallback rule) the Origin text when cf_shipper is empty. Never paired with an `address` param when falling back — see clientService.ts. */
+  /** Shipper client name — the ticket's Pickup Location; absent when that's empty (no port fallback). */
   shipperName?: string;
-  /** Consignee client name — cf_consignee, or the Destination text when cf_consignee is empty. Same no-address rule applies. */
+  /** Consignee client name — the ticket's Destination Address; absent when that's empty. */
   consigneeName?: string;
   accountName?: string;
   contactEmail?: string;
@@ -294,8 +296,8 @@ export function buildTruncatedDraft(node: unknown): TruncatedShipmentDraft {
     domesticType: mapDomesticType(raw.domesticTypeRaw),
     totalChargesCents: raw.quoteAmountRaw ? safeDollarsToCents(raw.quoteAmountRaw) : null,
     shipAt: raw.shipDateRaw ? safeParseDate(raw.shipDateRaw) : null,
-    shipperName: truncate(raw.shipperName || raw.origin, MAX_TEXT_LEN),
-    consigneeName: truncate(raw.consigneeName || raw.destination, MAX_TEXT_LEN),
+    shipperName: truncate(raw.shipperName, MAX_TEXT_LEN),
+    consigneeName: truncate(raw.consigneeName, MAX_TEXT_LEN),
     accountName: truncate(contact.accountName, MAX_TEXT_LEN),
     contactEmail: truncate(contact.email, MAX_TEXT_LEN),
     contactPhone: truncate(contact.phone, MAX_TEXT_LEN),
