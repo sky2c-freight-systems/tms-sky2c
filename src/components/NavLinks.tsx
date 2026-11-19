@@ -12,6 +12,7 @@ const LINKS = [
   { href: "/lookups", label: "Lookups" },
   { href: "/quickbooks", label: "QuickBooks" },
   { href: "/zoho-sync", label: "Zoho Sync" },
+  { href: "/aes-audit", label: "AES Audit" },
 ];
 
 export default function NavLinks() {

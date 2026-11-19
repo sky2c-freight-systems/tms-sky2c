@@ -25,6 +25,12 @@ const ZOHO_WIDGET_PREFIX = "/api/zoho/";
 // grants no access to commercial detail. See src/app/api/tracking/[code]/route.ts.
 const PUBLIC_PREFIXES = ["/tracking", "/api/tracking"];
 
+// CBP AESDirect WebLink return URLs. CBP sends the user's browser back here after a filing
+// or status inquiry; a cross-site POST wouldn't carry the Lax staff cookie, and an expired
+// session must not lose CBP's result. These routes touch no data — they only redirect to
+// the AES page, which stays behind staff auth. See src/app/api/aes/return/.
+const AES_RETURN_PREFIXES = ["/api/aes/return", "/api/aes/weblink/return"];
+
 // Customer portal: registration/login themselves must be reachable without a customer
 // session (that's the whole point), but everything else under /customer and
 // /api/customer requires one — see the branch below, which is a SEPARATE session/cookie
@@ -43,6 +49,7 @@ export async function middleware(request: NextRequest) {
   if (
     PUBLIC_PATHS.includes(pathname) ||
     WEBHOOK_PREFIXES.some((p) => pathname.startsWith(p)) ||
+    AES_RETURN_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
     pathname.startsWith(ZOHO_WIDGET_PREFIX) ||
     PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
     CUSTOMER_PUBLIC_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
@@ -82,7 +89,8 @@ export async function middleware(request: NextRequest) {
       return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
     }
     const loginUrl = new URL("/login", request.url);
-    loginUrl.searchParams.set("from", pathname);
+    // Keep the query string too (e.g. CBP's ITN/STA on the AES page) so it survives a login.
+    loginUrl.searchParams.set("from", `${pathname}${request.nextUrl.search}`);
     return NextResponse.redirect(loginUrl);
   }
 

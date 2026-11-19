@@ -30,7 +30,10 @@ function LoginForm() {
         return;
       }
 
-      const destination = searchParams.get("from") || "/";
+      // Only ever continue to a path inside this app — "from" is user-controllable, and an
+      // absolute or protocol-relative URL ("https://…", "//…", "/\…") would be an open redirect.
+      const from = searchParams.get("from") ?? "";
+      const destination = from.startsWith("/") && !from.startsWith("//") && !from.startsWith("/\\") ? from : "/";
       router.push(destination);
       router.refresh();
     } catch {

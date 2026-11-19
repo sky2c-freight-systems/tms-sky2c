@@ -739,3 +739,108 @@ model OtpChallenge {
 
   @@index([contact, purpose])
 }
+
+// AES audit log. Append-only, only src/lib/aes/audit.ts uses it.
+// Soft refs so deleting a shipment never deletes the audit (keep 5+ years).
+
+enum AesSubmissionKind {
+  FILING
+  INQUIRY
+}
+
+/// Set once, by the first CBP return.
+enum AesSubmissionOutcome {
+  PENDING
+  SUCCESS
+  FAILURE
+  STATUS
+}
+
+enum AesAuditEventType {
+  FILING_HANDOFF // filing sent
+  INQUIRY_HANDOFF // status check sent
+  HANDOFF_BLOCKED // send refused
+  HANDOFF_STALE // shipment changed since page load
+  CBP_RETURN // first CBP return
+  CBP_RETURN_REPEAT // later CBP returns
+  DETAILS_SAVED // AES details saved
+  // Not used yet:
+  ITN_CONFIRMED
+  ITN_ENTERED_MANUALLY
+  MARKED_EXEMPT
+}
+
+/// One row per send to CBP, saved before the browser posts. Never deleted.
+model AesSubmission {
+  id          String               @id @default(auto()) @map("_id") @db.ObjectId
+  /// Random id in the return URL, used to match CBP's reply.
+  nonce       String               @unique
+  shipmentId  String               @db.ObjectId // soft ref
+  fileNumber  String
+  srn         String
+  kind        AesSubmissionKind
+  action      String? // "A" | "R" (filing only)
+  environment String // "cert" | "production"
+  targetUrl   String // CBP URL used
+  /// Exact fields sent to CBP.
+  payload     Json
+  /// Hash of the fields (minus return URLs and FAC).
+  payloadHash String
+  lineCount   Int
+  /// Notes shown to the user at the time.
+  advisories  Json?
+  userId      String               @db.ObjectId
+  userEmail   String
+  userName    String
+  outcome     AesSubmissionOutcome @default(PENDING)
+  itnReported String?
+  staReported String?
+  returnedAt  DateTime?
+  returnCount Int                  @default(0)
+  createdAt   DateTime             @default(now())
+
+  @@index([shipmentId, createdAt])
+  @@index([fileNumber, createdAt])
+  @@index([createdAt])
+}
+
+/// AES event log. Never updated or deleted.
+model AesAuditEvent {
+  id           String            @id @default(auto()) @map("_id") @db.ObjectId
+  type         AesAuditEventType
+  submissionId String?           @db.ObjectId // soft ref
+  shipmentId   String?           @db.ObjectId // soft ref
+  fileNumber   String
+  environment  String
+  actorType    String // "USER" | "CBP" | "SYSTEM"
+  userId       String?           @db.ObjectId
+  userEmail    String?
+  userName     String?
+  /// One-line summary.
+  summary      String
+  /// Extra detail for the event type.
+  detail       Json?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime          @default(now())
+
+  @@index([fileNumber, createdAt])
+  @@index([submissionId])
+  @@index([type, createdAt])
+  @@index([createdAt])
+}
+
+/// AES details entered on the AES page, one per shipment.
+/// Only src/lib/aes/aesDetailsStore.ts uses it.
+model ShipmentAes {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  shipmentId    String   @unique @db.ObjectId // soft ref
+  fileNumber    String
+  details       Json
+  updatedBy     String?  @db.ObjectId
+  updatedByName String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([fileNumber])
+}
