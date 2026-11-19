@@ -871,6 +871,15 @@ export default function ShipmentForm({ mode, fileNumber, initialValues, lockDome
             </Link>
           </>
         )}
+        {mode === "edit" && fileNumber ? (
+          <Link href={`/shipments/${fileNumber}/aes`} className={actionButtonClass} title="File Electronic Export Information with CBP (AESDirect)">
+            AES
+          </Link>
+        ) : (
+          <button type="button" disabled title="Save the shipment first to file AES" className={actionButtonClass}>
+            AES
+          </button>
+        )}
         <button
           type="submit"
           disabled={saving}

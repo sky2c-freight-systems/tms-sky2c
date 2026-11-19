@@ -38,9 +38,8 @@ forces two deliberate deviations from a literal relational reading of the spec:
 
 ```bash
 npm install
-# .env is already present with local-dev placeholder values (see table below) —
-# update DATABASE_URL and, when you're ready to exercise those integrations,
-# the QBO_*/ZOHO_*/SMTP_* values.
+# Copy .env.example to .env, then set DATABASE_URL to your MongoDB replica-set
+# connection string. Configure QBO_*/ZOHO_*/SMTP_* when you need those integrations.
 npx prisma generate
 npx prisma db push     # creates collections/indexes from prisma/schema.prisma
 npm run db:seed        # admin user + starter lookups/locations/charge-code map
