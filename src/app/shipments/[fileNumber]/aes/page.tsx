@@ -7,8 +7,6 @@ import { findSubmissionByNonce, getShipmentAudit, type EventView, type Submissio
 import { summarizeAesStatus } from "@/lib/aes/aesStatus";
 import AesHandoffClient from "./AesHandoffClient";
 import AesAuditPanel from "./AesAuditPanel";
-import AesDetailsForm from "./AesDetailsForm";
-import { EMPTY_AES_DETAILS } from "@/lib/aes/aesDetails";
 
 // Always render fresh.
 export const dynamic = "force-dynamic";
@@ -85,23 +83,6 @@ export default async function ShipmentAesPage({ params, searchParams }: PageProp
         verifiedReturn={verified}
         statusSummary={audit ? summarizeAesStatus(audit.submissions) : null}
         filerId={handoff.config.filerId}
-        detailsSlot={
-          <AesDetailsForm
-            fileNumber={fileNumber}
-            initial={handoff.details?.details ?? EMPTY_AES_DETAILS}
-            lines={handoff.mapping.lines}
-            tmsValues={{
-              mot: handoff.mapping.rows.find((r) => r.code === "MOT")?.value ?? "",
-              portOfExport: handoff.mapping.rows.find((r) => r.code === "POE")?.value ?? "",
-              portOfUnlading: handoff.mapping.rows.find((r) => r.code === "POU")?.value ?? "",
-              transportRef: handoff.mapping.rows.find((r) => r.code === "BN")?.value ?? "",
-              conveyanceName: handoff.mapping.rows.find((r) => r.code === "VN")?.value ?? "",
-            }}
-            updatedAt={handoff.details?.updatedAt ?? null}
-            updatedByName={handoff.details?.updatedByName ?? null}
-            missingRequired={handoff.mapping.rows.filter((r) => r.required && (r.status === "missing" || r.status === "not-in-tms")).length}
-          />
-        }
       />
 
       <div className="mt-8">

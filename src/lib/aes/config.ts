@@ -49,6 +49,27 @@ export const ACE_PORTAL_URL = "https://ace.cbp.gov/";
 /** CBP AES help desk, for WebLink access/URL questions. */
 export const AES_HELP_DESK = { email: "askaes@census.gov", phone: "1-800-549-0595 (option 1)" } as const;
 
+// Short TMS guide to AES filing (PDF in public/aes), opened by "How it works".
+export const AES_USER_GUIDE = { url: "/aes/aesdirect-user-guide.pdf" } as const;
+
+// Sky2C as registered in ACE (Exporter account, ACE ID 1004374260, active). Used when the
+// AES_FILER_ID / AES_FORWARDER_CLIENT_ID settings are empty. Address: 1500 Atlantic St, Union City.
+export const SKY2C_FILER_ID = "943355318";
+export const SKY2C_AGENT = {
+  clientId: "",
+  name: "SKY 2 C FREIGHT SYSTEMS INC",
+  street: "1500 ATLANTIC ST",
+  addressLine1: null,
+  addressLine2: null,
+  city: "UNION CITY",
+  state: "CA",
+  zipCode: "94587",
+  country: "US",
+  telephone: "5107433300",
+  contact: null,
+  contactLastName: null,
+} as const;
+
 export type AesEnvironment = "cert" | "production";
 
 export interface AesConfig {
@@ -58,9 +79,9 @@ export interface AesConfig {
   /** Where the user must be signed in for WebLink to work: the ACE Portal on the same host family as filingUrl. */
   portalUrl: string;
   inquiryUrl: string;
-  /** Sky2C's filer ID (EIN) — FID on inquiries and the forwarding agent's party ID (AD3_4). "" = not configured. */
+  /** Sky2C's filer ID (EIN) — FID on inquiries and the forwarding agent's party ID (AD3_4). Defaults to SKY2C_FILER_ID. */
   filerId: string;
-  /** Client.clientId (business key, e.g. "SKY2C1") of the Client record holding Sky2C's own name/address/contact for AD3_*. */
+  /** Client.clientId of a Client record with Sky2C's details for AD3_*. "" = use SKY2C_AGENT. */
   forwarderClientId: string;
   /** Optional extra address(es) for CBP's response email, comma-separated, appended to the user's own. */
   notifyEmail: string;
@@ -135,15 +156,15 @@ export function getAesConfig(): AesConfig {
   }
 
   // FID is at most 11 alphanumeric characters (CBP WebLink Inquiry API); an EIN is 9 digits.
-  let filerId = toFilerId(process.env.AES_FILER_ID);
-  if (filerId && !/^[A-Z0-9]{9,11}$/.test(filerId)) {
-    configWarnings.push(`AES_FILER_ID "${process.env.AES_FILER_ID}" isn't a valid filer ID (9–11 letters/digits, e.g. an EIN) — not sent.`);
-    filerId = "";
+  // Empty setting = Sky2C's own EIN.
+  let filerId = toFilerId(process.env.AES_FILER_ID) || SKY2C_FILER_ID;
+  if (!/^[A-Z0-9]{9,11}$/.test(filerId)) {
+    configWarnings.push(`AES_FILER_ID "${process.env.AES_FILER_ID}" isn't a valid filer ID (9–11 letters/digits, e.g. an EIN) — Sky2C's EIN is used instead.`);
+    filerId = SKY2C_FILER_ID;
   }
-  if (!filerId) configWarnings.push("AES_FILER_ID is not set: the forwarding agent's ID must be entered in AESDirect, and status checks are unavailable.");
 
+  // Empty setting = the built-in Sky2C details (SKY2C_AGENT).
   const forwarderClientId = (process.env.AES_FORWARDER_CLIENT_ID ?? "").trim();
-  if (!forwarderClientId) configWarnings.push("AES_FORWARDER_CLIENT_ID is not set: Sky2C's name/address (forwarding agent) must be entered in AESDirect.");
 
   return {
     enabled,

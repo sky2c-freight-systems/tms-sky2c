@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useRef, useState, type ReactNode } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AES_HELP_DESK, type AesEnvironment } from "@/lib/aes/config";
+import { AES_HELP_DESK, AES_USER_GUIDE, type AesEnvironment } from "@/lib/aes/config";
 import { ITN_PATTERN } from "@/lib/aes/codes";
 import type { MappingRow, MappingStatus } from "@/lib/aes/weblinkFields";
 import type { SubmissionView } from "@/lib/aes/audit";
@@ -37,8 +37,6 @@ interface Props {
   statusSummary: AesStatusSummary | null;
   // "" if not set.
   filerId: string;
-  // AES details form, shown under "How to file".
-  detailsSlot?: ReactNode;
 }
 
 interface HandoffOk {
@@ -103,7 +101,7 @@ function param(params: Array<[string, string]>, name: string): string | undefine
 export default function AesHandoffClient(props: Props) {
   const {
     fileNumber, fieldsHash, srn, environment, enabled, configError, portalUrl, inquiry,
-    fields, rows, advisories, counts, lineCount, returnOutcome, returnParams, verifiedReturn, statusSummary, filerId, detailsSlot,
+    fields, rows, advisories, counts, lineCount, returnOutcome, returnParams, verifiedReturn, statusSummary, filerId,
   } = props;
   const router = useRouter();
 
@@ -288,9 +286,20 @@ export default function AesHandoffClient(props: Props) {
         </ul>
       )}
 
-      {/* How to file */}
+      {/* Steps to consider + user guide */}
       <div className="rounded border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm">
-        <p className="font-semibold">How to file</p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="font-semibold">Steps to consider</p>
+          <a
+            href={AES_USER_GUIDE.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Opens a short guide to AES filing (PDF)"
+            className="rounded border border-zinc-300 bg-white px-3 py-1 font-medium text-zinc-800 hover:bg-zinc-100"
+          >
+            How it works
+          </a>
+        </div>
         <ul className="mt-1 list-disc space-y-0.5 pl-5">
           <li>Use <strong>Microsoft Edge</strong>.</li>
           <li>
@@ -305,8 +314,6 @@ export default function AesHandoffClient(props: Props) {
           <li>Need help? {AES_HELP_DESK.email}, {AES_HELP_DESK.phone}.</li>
         </ul>
       </div>
-
-      {detailsSlot}
 
       {/* Summary + actions */}
       <div className="space-y-3">
@@ -392,7 +399,7 @@ export default function AesHandoffClient(props: Props) {
 
           {missingRequired.length > 0 && (
             <div className="rounded bg-zinc-50 px-3 py-2 text-zinc-700">
-              <p className="font-medium">Still missing (fill in AES details, or in AESDirect):</p>
+              <p className="font-medium">Still missing (fill in AESDirect):</p>
               <ul className="mt-1 list-disc pl-5">
                 {missingRequired.slice(0, 6).map((m) => <li key={m}>{m}</li>)}
                 {missingRequired.length > 6 && <li>and {missingRequired.length - 6} more</li>}

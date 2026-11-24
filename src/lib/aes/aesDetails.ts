@@ -38,6 +38,8 @@ export const aesLineSchema = z.object({
   unit1: pattern(/^[A-Z0-9]{1,3}$/, "Unit is a short code (e.g. KG, NO, X).", 3),
   quantity2: pattern(/^\d{1,10}$/, "Quantity: whole number.", 10),
   unit2: pattern(/^[A-Z0-9]{1,3}$/, "Unit is a short code (e.g. KG, NO).", 3),
+  valueUsd: pattern(/^\d{1,10}$/, "Value: whole US dollars.", 10),
+  weightKg: pattern(/^\d{1,10}$/, "Weight: whole kilograms.", 10),
   vehicleIdType: z.enum(["", "V", "P"]).default(""),
   vin: pattern(/^[A-Z0-9]{1,25}$/, "VIN / product ID: letters and digits only.", 25),
   ddtcItarExemption: text(20),
