@@ -18,9 +18,9 @@ import {
 export interface AesDetailsFormProps {
   fileNumber: string;
   initial: AesDetails;
-  lines: Array<{ key: string; description: string; vehicle: boolean }>;
+  lines: Array<{ key: string; description: string; vehicle: boolean; tmsValue?: string; tmsWeightKg?: string }>;
   // Current TMS values, shown as hints.
-  tmsValues: { mot: string; portOfExport: string; portOfUnlading: string; transportRef: string; conveyanceName: string };
+  tmsValues: { mot: string; portOfExport: string; portOfUnlading: string; transportRef: string; conveyanceName: string; exporterId?: string };
   updatedAt: string | null;
   updatedByName: string | null;
   // Required items still missing.
@@ -119,50 +119,35 @@ export default function AesDetailsForm(props: AesDetailsFormProps) {
       <div className="space-y-5 px-4 pb-4 text-sm">
         <ul className="list-disc pl-5 text-zinc-600">
           <li>Fill in what TMS doesn&apos;t hold. Saved for this shipment and sent to AESDirect.</li>
-          <li>Leave a box empty to use what TMS already has (shown in grey).</li>
+          <li>Leave a box empty to use what TMS already has (shown as &quot;From TMS&quot;).</li>
         </ul>
 
         <Section title="Shipment">
           <Select label="Filing option" value={data.filingOption} onChange={(v) => setTop("filingOption", v)} options={[["2", "Before departure"], ["4", "After departure (CBP-approved only)"]]} error={err("filingOption")} />
-          <Select label="Mode of transport" value={data.modeOfTransport} onChange={(v) => setTop("modeOfTransport", v)} options={MOT_OPTIONS} hint={tmsValues.mot ? `TMS: ${MOT_OPTIONS.find(([c]) => c === tmsValues.mot)?.[1] ?? tmsValues.mot}` : undefined} error={err("modeOfTransport")} />
-          <Input label="US port of export (4 digits)" value={data.portOfExport} onChange={(v) => setTop("portOfExport", v)} placeholder={tmsValues.portOfExport} error={err("portOfExport")} />
-          <Input label="Port of unloading (4–5 digits)" value={data.portOfUnlading} onChange={(v) => setTop("portOfUnlading", v)} placeholder={tmsValues.portOfUnlading} error={err("portOfUnlading")} />
-          <Input label="Booking / AWB / BOL number" value={data.transportRef} onChange={(v) => setTop("transportRef", v)} placeholder={tmsValues.transportRef} error={err("transportRef")} />
+          <Select label="Mode of transport" value={data.modeOfTransport} onChange={(v) => setTop("modeOfTransport", v)} options={MOT_OPTIONS} hint={tmsValues.mot ? `From TMS: ${MOT_OPTIONS.find(([c]) => c === tmsValues.mot)?.[1] ?? tmsValues.mot}` : undefined} error={err("modeOfTransport")} />
+          <Input label="US port of export (4 digits)" value={data.portOfExport} onChange={(v) => setTop("portOfExport", v)} tms={tmsValues.portOfExport} error={err("portOfExport")} />
+          <Input label="Port of unloading (4–5 digits)" value={data.portOfUnlading} onChange={(v) => setTop("portOfUnlading", v)} tms={tmsValues.portOfUnlading} error={err("portOfUnlading")} />
+          <Input label="Export carrier booking / AWB / BOL" value={data.transportRef} onChange={(v) => setTop("transportRef", v)} tms={tmsValues.transportRef} error={err("transportRef")} />
           <Input label="Carrier code (SCAC, or IATA for air)" value={data.carrierCode} onChange={(v) => setTop("carrierCode", v)} required error={err("carrierCode")} />
-          <Input label="Vessel / carrier name" value={data.conveyanceName} onChange={(v) => setTop("conveyanceName", v)} placeholder={tmsValues.conveyanceName} error={err("conveyanceName")} />
+          <Input label="Export carrier / vessel name" value={data.conveyanceName} onChange={(v) => setTop("conveyanceName", v)} tms={tmsValues.conveyanceName} required error={err("conveyanceName")} />
           <Select label="Exporter and consignee related?" value={data.relatedParties} onChange={(v) => setTop("relatedParties", v)} options={YN} required error={err("relatedParties")} />
-          <Select label="Hazardous goods?" value={data.hazardous} onChange={(v) => setTop("hazardous", v)} options={YN} required error={err("hazardous")} />
-          <Select label="Routed export?" value={data.routedExport} onChange={(v) => setTop("routedExport", v)} options={YN} required error={err("routedExport")} />
-          <Input label="In-bond code (if in-bond)" value={data.inbondCode} onChange={(v) => setTop("inbondCode", v)} error={err("inbondCode")} />
+          <Select label="Hazardous goods? (default No)" value={data.hazardous} onChange={(v) => setTop("hazardous", v)} options={YN} error={err("hazardous")} />
+          <Select label="Routed export? (default No)" value={data.routedExport} onChange={(v) => setTop("routedExport", v)} options={YN} error={err("routedExport")} />
+          <Input label="In-bond code (default 70 = not in bond)" value={data.inbondCode} onChange={(v) => setTop("inbondCode", v)} placeholder="70" error={err("inbondCode")} />
           <Input label="In-bond entry number" value={data.entryNumber} onChange={(v) => setTop("entryNumber", v)} error={err("entryNumber")} />
           <Input label="Foreign trade zone number" value={data.ftzNumber} onChange={(v) => setTop("ftzNumber", v)} error={err("ftzNumber")} />
           <Input label="Original ITN (if replacing a split shipment)" value={data.originalItn} onChange={(v) => setTop("originalItn", v)} error={err("originalItn")} />
         </Section>
 
         <Section title="Exporter">
-          <Input label="Exporter ID number (EIN)" value={data.exporterIdNumber} onChange={(v) => setTop("exporterIdNumber", v)} required error={err("exporterIdNumber")} />
-          <Select label="ID type" value={data.exporterIdType} onChange={(v) => setTop("exporterIdType", v)} options={PARTY_ID_TYPES} required error={err("exporterIdType")} />
+          <Input label="Exporter EIN (empty = use the Account's)" value={data.exporterIdNumber} onChange={(v) => setTop("exporterIdNumber", v)} tms={tmsValues.exporterId} error={err("exporterIdNumber")} />
+          <Select label="ID type" value={data.exporterIdType} onChange={(v) => setTop("exporterIdType", v)} options={PARTY_ID_TYPES} error={err("exporterIdType")} />
         </Section>
 
         <Section title="Consignee">
           <Select label="Consignee type" value={data.consigneeType} onChange={(v) => setTop("consigneeType", v)} options={CONSIGNEE_TYPES} required error={err("consigneeType")} />
           <Select label="Sold while in transit?" value={data.soldEnRoute} onChange={(v) => setTop("soldEnRoute", v)} options={YN} error={err("soldEnRoute")} />
         </Section>
-
-        <details className="rounded border border-zinc-200 px-3 py-2">
-          <summary className="cursor-pointer font-medium">Intermediate consignee (only if there is one)</summary>
-          <div className="mt-2 grid gap-3 md:grid-cols-3">
-            <Input label="Name" value={data.intermediateName} onChange={(v) => setTop("intermediateName", v)} error={err("intermediateName")} />
-            <Input label="Contact name" value={data.intermediateContact} onChange={(v) => setTop("intermediateContact", v)} error={err("intermediateContact")} />
-            <Input label="Phone" value={data.intermediatePhone} onChange={(v) => setTop("intermediatePhone", v)} error={err("intermediatePhone")} />
-            <Input label="Address line 1" value={data.intermediateAddress1} onChange={(v) => setTop("intermediateAddress1", v)} error={err("intermediateAddress1")} />
-            <Input label="Address line 2" value={data.intermediateAddress2} onChange={(v) => setTop("intermediateAddress2", v)} error={err("intermediateAddress2")} />
-            <Input label="City" value={data.intermediateCity} onChange={(v) => setTop("intermediateCity", v)} error={err("intermediateCity")} />
-            <Input label="State / province" value={data.intermediateState} onChange={(v) => setTop("intermediateState", v)} error={err("intermediateState")} />
-            <Input label="Country" value={data.intermediateCountry} onChange={(v) => setTop("intermediateCountry", v)} error={err("intermediateCountry")} />
-            <Input label="Postal code" value={data.intermediatePostalCode} onChange={(v) => setTop("intermediatePostalCode", v)} error={err("intermediatePostalCode")} />
-          </div>
-        </details>
 
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -182,9 +167,11 @@ export default function AesDetailsForm(props: AesDetailsFormProps) {
                 <p className="mb-2 font-medium">Line {i + 1}: <span className="font-normal text-zinc-700">{l.description}</span></p>
                 <div className="grid gap-3 md:grid-cols-4">
                   <Input label="Schedule B number (10 digits)" value={ld.scheduleB} onChange={(v) => setLine(l.key, "scheduleB", v)} required error={e("scheduleB")} />
-                  <Input label="Export information code" value={ld.exportInfoCode} onChange={(v) => setLine(l.key, "exportInfoCode", v)} placeholder="OS" required error={e("exportInfoCode")} />
+                  <Input label="Export info code (OS; HH = household goods only)" value={ld.exportInfoCode} onChange={(v) => setLine(l.key, "exportInfoCode", v)} placeholder="OS" error={e("exportInfoCode")} />
                   <Input label="License type" value={ld.licenseType} onChange={(v) => setLine(l.key, "licenseType", v)} placeholder="C33" required error={e("licenseType")} />
                   <Select label="Origin of goods" value={ld.origin} onChange={(v) => setLine(l.key, "origin", v)} options={ORIGIN_TYPES} required error={e("origin")} />
+                  <Input label="Value of goods (USD)" value={ld.valueUsd} onChange={(v) => setLine(l.key, "valueUsd", v)} tms={l.tmsValue} required error={e("valueUsd")} />
+                  <Input label="Shipping weight (kg)" value={ld.weightKg} onChange={(v) => setLine(l.key, "weightKg", v)} tms={l.tmsWeightKg} required error={e("weightKg")} />
                   <Input label="Quantity (Schedule B unit)" value={ld.quantity1} onChange={(v) => setLine(l.key, "quantity1", v)} error={e("quantity1")} />
                   <Input label="Unit (e.g. KG, NO, X)" value={ld.unit1} onChange={(v) => setLine(l.key, "unit1", v)} error={e("unit1")} />
                   <Input label="Second quantity" value={ld.quantity2} onChange={(v) => setLine(l.key, "quantity2", v)} error={e("quantity2")} />
@@ -243,17 +230,20 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-function Input(p: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; required?: boolean; error?: string }) {
+// tms = the value TMS sends when this box is left empty.
+function Input(p: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; tms?: string; required?: boolean; error?: string }) {
+  const fromTms = !p.value && !!p.tms;
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-xs text-zinc-600">{p.label}{p.required && <span className="ml-0.5 text-red-500" title="Required">*</span>}</span>
+      <span className="text-xs text-zinc-600">{p.label}{p.required && !fromTms && <span className="ml-0.5 text-red-500" title="Required">*</span>}</span>
       <input
         value={p.value}
-        placeholder={p.placeholder}
+        placeholder={p.tms || p.placeholder}
         onChange={(e) => p.onChange(e.target.value)}
         aria-invalid={!!p.error}
         className={`rounded border px-2 py-1.5 ${p.error ? "border-red-400" : "border-zinc-300"}`}
       />
+      {fromTms && <span className="text-xs text-green-700">From TMS: {p.tms}</span>}
       {p.error && <span className="text-xs text-red-600">{p.error}</span>}
     </label>
   );

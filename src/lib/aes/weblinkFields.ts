@@ -9,10 +9,10 @@ import {
   toSrn,
   toUsStateCode,
 } from "@/lib/aes/codes";
-import { EMPTY_AES_LINE, type AesDetails, type AesLineDetails } from "@/lib/aes/aesDetails";
-
-// Maps a TMS shipment to AESDirect fields. Pure: no DB, no env.
-// Never send made-up values; blanks are filled in AESDirect.
+import { findExportPort, findUnladingPort, isAirportPlace } from "@/lib/aes/portCodes";
+import { airlineFromAwb } from "@/lib/aes/airlines";
+import { parsePartyText } from "@/lib/aes/partyText";
+import { DOMESTIC_TYPE_LABELS } from "@/lib/enumLabels";
 
 export interface AesParty {
   clientId: string;
@@ -27,11 +27,20 @@ export interface AesParty {
   telephone: string | null;
   contact: string | null;
   contactLastName: string | null;
+  idNumber?: string | null;
+  idType?: string | null;
+  scac?: string | null;
+}
+
+export interface AesLocation {
+  name: string;
+  code: string | null;
+  state: string | null;
+  country: string | null;
+  matched?: boolean;
 }
 
 export interface AesCargoItem {
-  // Used to find this line's AES details.
-  id?: string;
   description: string | null;
   numberOfPieces: number | null;
   pieceType: string | null;
@@ -68,34 +77,32 @@ export interface AesShipmentInput {
   pickupScheduleAt: Date | null;
   etaAt: Date | null;
   cargoDescription: string | null;
+  grossWeightLbs?: number | null;
   carrierPicklist: string | null;
-  // Zoho cf_awb, used if there is no BOL/PRO.
   zohoAwb?: string | null;
+  consigneeDetails?: string | null;
+  palletsDimensions?: string | null;
 }
 
 export interface AesMappingInput {
   shipment: AesShipmentInput;
-  // Exporter: shipper, else account.
   shipper: AesParty | null;
   account: AesParty | null;
-  // Consignee, else ship-to.
   consignee: AesParty | null;
   shipTo: AesParty | null;
   carrier: AesParty | null;
-  // Sky2C as filing agent.
   forwarder: AesParty | null;
-  // "" if not set.
   filerId: string;
   containers: AesContainer[];
-  // Port codes from Location.code, if any.
   portOfExportCode: string;
   portOfUnladingCode: string;
+  pickupLocation?: AesLocation | null;
+  originPort?: AesLocation | null;
+  destinationPort?: AesLocation | null;
   responseEmail: string;
   successUrl: string;
   failureUrl: string;
   today: Date;
-  // Saved AES details. None = same output as before.
-  details?: AesDetails | null;
 }
 
 export type MappingStatus = "mapped" | "derived" | "missing" | "not-in-tms" | "warning";
@@ -112,29 +119,21 @@ export interface MappingRow {
 }
 
 export interface AesMappingResult {
-  // SRN sent (file number, dash -> C).
   srn: string;
   fields: Record<string, string>;
   rows: MappingRow[];
-  // Notes for the user (possible exemptions etc).
   advisories: string[];
   lineCount: number;
   counts: Record<MappingStatus, number>;
-  // Goods lines, in order, with their details key.
-  lines: Array<{ key: string; description: string; vehicle: boolean }>;
 }
 
-// Max description length.
 const MAX_DESCRIPTION = 45;
-// Max SRN length.
 const MAX_SRN = 17;
 const MAX_LINES = 99;
 const LBS_TO_KG = 0.45359237;
-// Under $2,500 per Schedule B and no licence: filing may not be needed.
 const LOW_VALUE_THRESHOLD_USD = 2500;
 
 function line1(p: AesParty): string {
-  // Use street; addressLine1 only if street is empty.
   return toAesText(p.street) || toAesText(p.addressLine1);
 }
 
@@ -142,7 +141,6 @@ function line2(p: AesParty): string {
   return toAesText(p.street) ? toAesText(p.addressLine2) || toAesText(p.addressLine1) : toAesText(p.addressLine2);
 }
 
-// 2-letter state, only for US/CA/MX.
 function partyStateCode(p: AesParty, countryCode: string): { value: string; note?: string } {
   const raw = toAesText(p.state);
   if (!raw) return { value: "" };
@@ -154,22 +152,43 @@ function partyStateCode(p: AesParty, countryCode: string): { value: string; note
   return { value: "", note: `"${raw}" not sent — AES state codes apply to US/Canada/Mexico addresses` };
 }
 
-// Guess mode of transport; user confirms it.
-export function deriveModeOfTransport(s: AesShipmentInput, hasContainers: boolean): { code: string; reason: string } {
-  const layout = (s.zohoLayoutName ?? "").toLowerCase();
-  if (s.domesticType === "DOMESTIC_AIR" || layout.includes("air")) {
-    return { code: "40", reason: s.domesticType === "DOMESTIC_AIR" ? "domestic type = Domestic Air" : `layout "${s.zohoLayoutName}"` };
+function contactNames(p: AesParty): { first: string; last: string; split: boolean } {
+  const first = toAesPersonName(p.contact);
+  const last = toAesPersonName(p.contactLastName);
+  if (last || !first.includes(" ")) return { first, last, split: false };
+  const cut = first.lastIndexOf(" ");
+  return { first: toAesPersonName(first.slice(0, cut)), last: toAesPersonName(first.slice(cut + 1)), split: true };
+}
+
+function sameParty(a: AesParty | null, b: AesParty | null): boolean {
+  if (!a || !b) return false;
+  if (a.clientId && a.clientId === b.clientId) return true;
+  const key = (v: string) => toAesText(v).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return !!key(a.name) && key(a.name) === key(b.name);
+}
+
+export function deriveModeOfTransport(
+  s: AesShipmentInput,
+  hasContainers: boolean,
+  ctx: { destinationCountry?: string; originPort?: AesLocation | null } = {}
+): { code: string; reason: string } {
+  const label = DOMESTIC_TYPE_LABELS[s.domesticType] ?? s.domesticType;
+  const c = hasContainers;
+  if (s.domesticType === "DOMESTIC_AIR") return { code: c ? "41" : "40", reason: `Domestic Type (${label})` };
+  const dest = ctx.destinationCountry ?? "";
+  if (!dest || dest === "CA" || dest === "MX" || dest === "US") {
+    const to = dest === "CA" || dest === "MX" ? `, destination ${dest}` : "";
+    if (s.domesticType === "RAIL" || s.domesticType === "MOTOR_RAIL") return { code: c ? "21" : "20", reason: `Domestic Type (${label})${to}` };
+    if (s.domesticType === "TRUCK" || s.domesticType === "TRUCK_TEAM") return { code: c ? "31" : "30", reason: `Domestic Type (${label})${to}` };
+    return { code: c ? "31" : "30", reason: label ? `Default Truck (Domestic Type "${label}" has no AES match)${to}` : `Default Truck (no Domestic Type)${to}` };
   }
-  if (layout.includes("port") || (s.serviceType ?? "").toLowerCase().includes("port")) {
-    return { code: hasContainers ? "11" : "10", reason: `${s.zohoLayoutName ? `layout "${s.zohoLayoutName}"` : `service type "${s.serviceType}"`}: ocean export${hasContainers ? ", containers on file" : ""}` };
-  }
-  if (s.domesticType === "RAIL" || s.domesticType === "MOTOR_RAIL") {
-    return { code: hasContainers ? "21" : "20", reason: "domestic type = Rail" };
-  }
-  if (s.domesticType === "TRUCK" || s.domesticType === "TRUCK_TEAM") {
-    return { code: hasContainers ? "31" : "30", reason: "domestic type = Truck" };
-  }
-  return { code: "", reason: "" };
+  if (isAirportPlace(ctx.originPort)) return { code: c ? "41" : "40", reason: `Origin Port is an airport; destination ${dest} isn't Canada/Mexico` };
+  if (toAesText(s.zohoAwb)) return { code: c ? "41" : "40", reason: `AWB on the shipment; destination ${dest} isn't Canada/Mexico` };
+  return { code: c ? "11" : "10", reason: `Leaves by ship: destination ${dest} isn't Canada/Mexico and the Origin Port isn't an airport` };
+}
+
+function palletPieces(text: string | null | undefined): number {
+  return [...(text ?? "").matchAll(/(\d+)\s*@/g)].reduce((sum, m) => sum + Number(m[1]), 0);
 }
 
 export function buildWeblinkFields(input: AesMappingInput): AesMappingResult {
@@ -177,10 +196,6 @@ export function buildWeblinkFields(input: AesMappingInput): AesMappingResult {
   const rows: MappingRow[] = [];
   const advisories: string[] = [];
   const { shipment: s } = input;
-  const d = input.details ?? null;
-  const DETAILS = "AES details (this page)";
-  // AES details value, or "".
-  const dv = (v: string | undefined | null) => toAesText(v ?? "");
 
   function put(
     group: string,
@@ -201,12 +216,10 @@ export function buildWeblinkFields(input: AesMappingInput): AesMappingResult {
     rows.push({ group, code, label, value: v, source, status, required: !!opts.required, note: opts.note });
   }
 
-  // ---- System ----
   put("System", "wl_success_url", "Success return URL", input.successUrl, "TMS");
   put("System", "wl_nosed_url", "Failure return URL", input.failureUrl, "TMS");
   put("System", "EMAIL", "Response email", input.responseEmail, "Your email (+ the company notification email, if set)");
 
-  // ---- Shipment ----
   const srnFull = toSrn(s.fileNumber);
   const srn = srnFull.slice(0, MAX_SRN);
   const srnChanged = srn !== s.fileNumber;
@@ -223,56 +236,95 @@ export function buildWeblinkFields(input: AesMappingInput): AesMappingResult {
     required: true,
     note: "Add = first filing for this SRN; Replace = correct an accepted filing (same SRN)",
   });
-  if (dv(d?.filingOption)) {
-    put("Shipment", "FO", "Filing option", dv(d?.filingOption), DETAILS, {
-      required: true,
-      note: dv(d?.filingOption) === "4" ? "4 = Postdeparture (needs CBP approval)" : "2 = Predeparture",
-    });
-  } else {
-    put("Shipment", "FO", "Filing option", "2", "Default", {
-      required: true,
-      derived: true,
-      note: "2 = Predeparture (the AESDirect default). Option 4 (postdeparture) needs CBP approval",
-    });
-  }
+  put("Shipment", "FO", "Filing option", "2", "Default", {
+    required: true,
+    derived: true,
+    note: "2 = Predeparture (the AESDirect default). Option 4 (postdeparture) needs CBP approval",
+  });
 
-  const bnFromDetails = dv(d?.transportRef);
-  const bn = bnFromDetails || toAesText(s.bolNumber) || toAesText(s.proNumber) || toAesText(s.zohoAwb);
-  put("Shipment", "BN", "Transportation reference (booking/BOL)", bn,
-    bnFromDetails ? DETAILS : s.bolNumber ? "BOL Number" : s.proNumber ? "PRO Number" : toAesText(s.zohoAwb) ? "AWB (booking)" : "BOL Number");
+  const ultimate = input.consignee;
+  const zc = ultimate && line1(ultimate) ? null : parsePartyText(s.consigneeDetails);
+  const ZC_SOURCE = "Zoho Consignee Details (read from the text)";
+  const recordCountry = toCountryCode(ultimate?.country);
+  const textCountry = zc?.country ?? "";
+  const ultimateCountry = recordCountry || textCountry;
+  const destPortCountry = toCountryCode(input.destinationPort?.country);
+  const cod = ultimateCountry || destPortCountry || toCountryCode(s.country);
 
-  const usppi = input.shipper ?? input.account;
+  const hasContainers = input.containers.some((c) => toAesText(c.containerNumber));
+  const mot = deriveModeOfTransport(s, hasContainers, { destinationCountry: cod, originPort: input.originPort });
+  const air = mot.code.startsWith("4");
+  const vessel = mot.code.startsWith("1");
+
+  const awb = toAesText(s.zohoAwb);
+  const pro = toAesText(s.proNumber);
+  const bol = toAesText(s.bolNumber);
+  const bn = air ? awb : vessel ? "" : pro || bol;
+  put("Shipment", "BN", "Transportation reference (AWB/PRO/BOL)", bn,
+    air ? "AWB" : vessel ? "Ocean carrier's booking number" : pro ? "PRO Number" : bol ? "BOL Number" : "PRO / BOL Number", {
+      note: bn ? undefined
+        : air ? "No AWB on the shipment: fill in AESDirect"
+        : vessel ? "Fill in AESDirect: the ocean carrier's booking number"
+        : "No PRO or BOL number on the shipment: fill in AESDirect",
+    });
+
+  const usppi = input.account;
   const usppiCountry = usppi ? toCountryCode(usppi.country) || "US" : "US";
-  const originState = usppi ? toUsStateCode(usppi.state) : "";
-  put("Shipment", "ST", "U.S. state of origin", originState, usppi ? `Exporter state ("${toAesText(usppi.state)}")` : "Exporter state", {
-    required: true,
-    note: usppi && toAesText(usppi.state) && !originState ? "Not a recognizable US state" : undefined,
-  });
+  const usppiState = usppi ? toUsStateCode(usppi.state) : "";
 
-  const poe = dv(d?.portOfExport) || input.portOfExportCode;
-  put("Shipment", "POE", "Port of export (Schedule D)", poe, dv(d?.portOfExport) ? DETAILS : "Location code of Place of Receipt / Origin", {
-    required: true,
-    note: poe ? undefined : "TMS locations have no Schedule D port codes yet — pick the port in AESDirect",
-  });
+  const pickupState = toUsStateCode(input.pickupLocation?.state);
+  const portState = toUsStateCode(input.originPort?.state);
+  const originState = pickupState || portState;
+  const fromText = (l?: AesLocation | null) => (l && l.matched === false ? ", from the text" : "");
+  put("Shipment", "ST", "U.S. state of origin", originState,
+    pickupState ? `Pickup Location state ("${toAesText(input.pickupLocation?.state)}"${fromText(input.pickupLocation)})`
+      : portState ? `Origin Port state ("${toAesText(input.originPort?.state)}"${fromText(input.originPort)})`
+      : "Pickup Location / Origin Port state", {
+      required: true,
+      note: originState ? undefined : "No US state found for the Pickup Location or Origin Port",
+    });
 
-  const ultimate = input.consignee ?? input.shipTo;
-  const ultimateCountry = toCountryCode(ultimate?.country);
-  const cod = ultimateCountry || toCountryCode(s.country);
-  put("Shipment", "COD", "Country of ultimate destination", cod, ultimate?.country ? `Consignee country ("${toAesText(ultimate.country)}")` : `Shipment country ("${toAesText(s.country)}")`, {
-    required: true,
-    warning: cod === "US",
-    note: cod === "US" ? "Destination is the US — AES applies to exports only" : undefined,
-  });
+  const listedPort = input.portOfExportCode ? null : findExportPort(input.originPort, mot.code);
+  const poe = input.portOfExportCode || listedPort?.code || "";
+  const originName = toAesText(input.originPort?.name);
+  put("Shipment", "POE", "Port of export (Schedule D)", poe,
+    input.portOfExportCode ? `Origin Port (location code${fromText(input.originPort)})`
+      : listedPort ? `Origin Port "${originName}" = ${listedPort.name} (built-in Schedule D list)`
+      : "Origin Port", {
+      required: true,
+      derived: !!listedPort,
+      note: input.portOfExportCode ? undefined
+        : listedPort ? "Matched by port name, please confirm"
+        : originName ? `No Schedule D code found for "${originName}"${mot.code ? "" : " (mode of transport unknown)"}: pick the port in AESDirect`
+        : "No Origin Port on the shipment: pick the port in AESDirect",
+    });
+
+  put("Shipment", "COD", "Country of ultimate destination", cod,
+    recordCountry ? `Consignee country ("${toAesText(ultimate?.country)}")`
+      : textCountry ? ZC_SOURCE
+      : destPortCountry ? `Destination Port country ("${toAesText(input.destinationPort?.country)}"${fromText(input.destinationPort)})`
+      : `Shipment country ("${toAesText(s.country)}")`, {
+      required: true,
+      derived: !recordCountry && !!textCountry,
+      warning: cod === "US",
+      note: cod === "US" ? "Destination is the US — AES applies to exports only" : undefined,
+    });
   if (cod === "US") advisories.push("The destination is the US. AES filings are only for exports. Check the consignee or shipment country.");
   if (cod === "CA") advisories.push("Destination is Canada. Most exports to Canada don't need an AES filing unless a license is needed. Check before filing.");
 
-  const pou = dv(d?.portOfUnlading) || input.portOfUnladingCode;
-  put("Shipment", "POU", "Port of unlading", pou, dv(d?.portOfUnlading) ? DETAILS : "Location code of Place of Delivery / Destination", {
-    note: pou ? undefined : "Required for vessel exports — pick it in AESDirect",
-  });
+  const listedPou = input.portOfUnladingCode ? null : findUnladingPort(input.destinationPort, mot.code);
+  const pou = input.portOfUnladingCode || listedPou?.code || "";
+  const destName = toAesText(input.destinationPort?.name);
+  put("Shipment", "POU", "Port of unlading", pou,
+    input.portOfUnladingCode ? `Destination Port (location code${fromText(input.destinationPort)})`
+      : listedPou ? `Destination Port "${destName}" = ${listedPou.name} (built-in Schedule K list)`
+      : "Destination Port", {
+      derived: !!listedPou,
+      note: pou ? (listedPou ? "Matched by port name, please confirm" : undefined) : "Needed for vessel exports only: pick it in AESDirect",
+    });
 
   const exportDate = s.shipAt ?? s.pickupScheduleAt ?? s.preferredPickupAt ?? s.etaAt;
-  const exportDateSource = s.shipAt ? "Ship Date" : s.pickupScheduleAt ? "Pickup Schedule" : s.preferredPickupAt ? "Preferred Pickup" : "ETA";
+  const exportDateSource = s.shipAt ? "Pickup Date" : s.pickupScheduleAt ? "Pickup Schedule Time" : s.preferredPickupAt ? "Preferred Pickup Date" : "ETA";
   const startOfToday = Date.UTC(input.today.getUTCFullYear(), input.today.getUTCMonth(), input.today.getUTCDate());
   const inPast = !!exportDate && exportDate.getTime() < startOfToday;
   put("Shipment", "EDA", "Estimated date of export", formatAesDate(exportDate), exportDateSource, {
@@ -281,89 +333,131 @@ export function buildWeblinkFields(input: AesMappingInput): AesMappingResult {
     note: inPast ? "Date is in the past — predeparture filings need a current/future export date" : undefined,
   });
 
-  const hasContainers = input.containers.some((c) => toAesText(c.containerNumber));
-  const derivedMot = deriveModeOfTransport(s, hasContainers);
-  const motFromDetails = dv(d?.modeOfTransport);
-  const mot = motFromDetails ? { code: motFromDetails, reason: DETAILS } : derivedMot;
-  put("Shipment", "MOT", "Mode of transportation", mot.code, mot.reason || "Domestic type / layout", {
+  put("Shipment", "MOT", "Mode of transportation", mot.code, mot.reason, {
     required: true,
-    derived: !motFromDetails,
-    note: mot.code ? `${MOT_LABELS[mot.code]}${motFromDetails ? "" : " — derived, please confirm"}` : undefined,
+    derived: true,
+    note: `${MOT_LABELS[mot.code]}. AES wants the mode the goods leave the US on: change it in AESDirect if it differs`,
   });
 
-  const carrierCode = dv(d?.carrierCode);
-  put("Shipment", "SCAC", mot.code.startsWith("4") ? "Carrier IATA code" : "Carrier SCAC code", carrierCode, carrierCode ? DETAILS : "Carrier", {
+  const airline = air ? airlineFromAwb(s.zohoAwb) : null;
+  const carrierName = vessel ? "" : toAesText(input.carrier?.name) || toAesText(s.carrierPicklist);
+  const carrierSource = toAesText(input.carrier?.name) ? "Carrier" : "Carrier-Name (Zoho)";
+  const scac = toAesText(input.carrier?.scac).toUpperCase();
+  const carrierScac = !vessel && /^[A-Z]{2,4}$/.test(scac) ? scac : "";
+  put("Shipment", "SCAC", air ? "Carrier IATA code" : "Carrier SCAC code",
+    air ? airline?.iata ?? "" : carrierScac,
+    air ? (airline ? `AWB prefix ${airline.prefix} (${airline.name})` : "AWB prefix")
+      : vessel ? "Ocean carrier"
+      : carrierScac ? "Carrier (SCAC on the client record)" : "Carrier", {
+      required: true,
+      notInTms: true,
+      derived: air,
+      note: air
+        ? airline ? "From the AWB number, please confirm" : awb ? "AWB prefix isn't in the built-in airline list: fill in AESDirect" : "No AWB on the shipment: fill in AESDirect"
+        : vessel ? "Fill in AESDirect: the ocean carrier's SCAC (the TMS Carrier is the pickup trucker)"
+        : carrierScac ? undefined
+        : input.carrier ? "Add the SCAC on the Carrier's client record, or fill in AESDirect"
+        : "No Carrier on the shipment: fill in AESDirect",
+    });
+  put("Shipment", "VN", "Conveyance / carrier name", air ? airline?.name ?? "" : carrierName,
+    air ? (airline ? `AWB prefix ${airline.prefix}` : "Airline") : vessel ? "Vessel name" : carrierName ? carrierSource : "Carrier", {
+      required: true,
+      notInTms: true,
+      derived: air,
+      note: air
+        ? airline ? "Airline from the AWB number, please confirm" : "Fill in AESDirect: the airline name"
+        : vessel ? "Fill in AESDirect: the vessel name"
+        : carrierName ? undefined : "No Carrier on the shipment: fill in AESDirect",
+    });
+
+  const related = sameParty(usppi, ultimate);
+  put("Shipment", "RCC", "Related company indicator", related ? "Y" : "N", related ? "Account and Consignee are the same client" : "Account vs Consignee", {
+    required: true,
+    derived: true,
+    note: related ? "Same party, so related" : "N = not related. Use Y if either party owns 10% or more of the other",
+  });
+  put("Shipment", "HAZ", "Hazardous material indicator", "N", "Default (No)", { required: true });
+  put("Shipment", "RT", "Routed export transaction", "N", "Default (No)", { required: true });
+
+  put("Shipment", "IBT", "In-bond code", "70", "Domestic warehouse (not in bond)", { note: "70 = Not in bond" });
+
+  const usppiSource = "Account";
+  put("USPPI (exporter)", "AD0_1", "Name", toAesText(usppi?.name), usppiSource, { required: true });
+  const idFromClient = (usppi?.idNumber ?? "").replace(/[\s.-]/g, "").toUpperCase();
+  const exporterId = /^[A-Z0-9]{9,11}$/.test(idFromClient) ? idFromClient : "";
+  put("USPPI (exporter)", "AD0_2", "ID (EIN)", exporterId, exporterId ? "Account (EIN)" : usppiSource, {
     required: true,
     notInTms: true,
-    note: carrierCode ? undefined : "TMS doesn't store SCAC/IATA codes yet",
+    note: exporterId ? undefined
+      : idFromClient ? `Account EIN "${toAesText(usppi?.idNumber)}" isn't 9-11 letters/digits`
+      : "Add the EIN on the Account's client record, or fill in AESDirect",
   });
-  const vnFromDetails = dv(d?.conveyanceName);
-  put("Shipment", "VN", "Conveyance / carrier name", vnFromDetails || toAesText(input.carrier?.name) || toAesText(s.carrierPicklist),
-    vnFromDetails ? DETAILS : input.carrier ? "Carrier client" : "Carrier-Name picklist", { required: true });
-
-  for (const [code, label, key] of [
-    ["RCC", "Related company indicator", "relatedParties"],
-    ["HAZ", "Hazardous material indicator", "hazardous"],
-    ["RT", "Routed export transaction", "routedExport"],
-  ] as const) {
-    const v = dv(d?.[key]);
-    put("Shipment", code, label, v, v ? DETAILS : "—", { required: true, notInTms: true });
-  }
-
-  // Optional, only if entered. IBT = in-bond code, IBN = entry number (as the old app).
-  put("Shipment", "IBT", "In-bond code", dv(d?.inbondCode), DETAILS);
-  put("Shipment", "IBN", "In-bond / entry number", dv(d?.entryNumber), DETAILS);
-  put("Shipment", "FTZ", "Foreign trade zone number", dv(d?.ftzNumber), DETAILS);
-  put("Shipment", "ORIG_ITN", "Original ITN", dv(d?.originalItn), DETAILS);
-
-  // ---- Exporter (AD0), must be a US party ----
-  const usppiSource = input.shipper ? "Shipper" : input.account ? "Account (no shipper on file)" : "Shipper";
-  put("USPPI (exporter)", "AD0_1", "Name", toAesText(usppi?.name), usppiSource, { required: true });
-  const exporterId = dv(d?.exporterIdNumber);
-  const exporterIdType = dv(d?.exporterIdType);
-  put("USPPI (exporter)", "AD0_2", "ID (EIN)", exporterId, exporterId ? DETAILS : usppiSource, { required: true, notInTms: true, note: exporterId ? undefined : "TMS doesn't store EINs yet" });
-  put("USPPI (exporter)", "AD0_3", "ID type", exporterIdType, exporterIdType ? DETAILS : usppiSource, { required: true, notInTms: true, note: "EIN / DUNS / Foreign entity ID" });
+  const typeFromClient = ["E", "D", "T"].includes(toAesText(usppi?.idType)) ? toAesText(usppi?.idType) : "";
+  const exporterIdType = typeFromClient || (exporterId ? "E" : "");
+  put("USPPI (exporter)", "AD0_3", "ID type", exporterIdType,
+    typeFromClient ? "Account (EIN type)" : exporterId ? "Default (EIN)" : usppiSource, {
+      required: true,
+      notInTms: true,
+      note: "EIN / DUNS / Foreign entity ID",
+    });
   if (usppi) {
     if (usppiCountry !== "US") {
-      advisories.push(`The exporter (${toAesText(usppi.name)}) has a non-US address. The exporter must be a US company. Check the shipper.`);
+      advisories.push(`The exporter (${toAesText(usppi.name)}) has a non-US address. The exporter must be a US company. Check the Account.`);
     }
     put("USPPI (exporter)", "AD0_4", "Address line 1", line1(usppi), usppiSource, { required: true });
     put("USPPI (exporter)", "AD0_5", "Address line 2", line2(usppi), usppiSource);
     put("USPPI (exporter)", "AD0_6", "City", toAesText(usppi.city), usppiSource, { required: true });
-    put("USPPI (exporter)", "AD0_7", "State", originState, usppiSource, { required: true });
+    put("USPPI (exporter)", "AD0_7", "State", usppiState, usppiSource, { required: true });
     put("USPPI (exporter)", "AD0_8", "Postal code", toAesPostalCode(usppi.zipCode, "US"), usppiSource, {
       required: true,
       note: toAesText(usppi.zipCode) && !toAesPostalCode(usppi.zipCode, "US") ? `"${toAesText(usppi.zipCode)}" isn't a 5/9-digit US ZIP` : undefined,
     });
-    put("USPPI (exporter)", "AD0_9", "Contact first name", toAesPersonName(usppi.contact), usppiSource, { required: true });
-    put("USPPI (exporter)", "AD0_11", "Contact last name", toAesPersonName(usppi.contactLastName), usppiSource, { required: true });
+    const names = contactNames(usppi);
+    const nameSource = names.split ? "Account contact (full name split)" : usppiSource;
+    put("USPPI (exporter)", "AD0_9", "Contact first name", names.first, nameSource, { required: true, derived: names.split });
+    put("USPPI (exporter)", "AD0_11", "Contact last name", names.last, nameSource, { required: true, derived: names.split });
     put("USPPI (exporter)", "AD0_12", "Contact phone", toAesPhone(usppi.telephone, "US"), usppiSource, { required: true });
   }
 
-  // ---- Consignee (AD1) ----
-  const ucSource = input.consignee ? "Consignee" : input.shipTo ? "Ship To (no consignee on file)" : "Consignee";
-  put("Ultimate consignee", "AD1_3", "Name", toAesText(ultimate?.name), ucSource, { required: true });
-  if (ultimate) {
-    const contactName = toAesPersonName([ultimate.contact, ultimate.contactLastName].filter(Boolean).join(" "));
-    const state = partyStateCode(ultimate, ultimateCountry);
+  const ucSource = "Consignee";
+  const pick = (record: string, text: string | undefined) =>
+    record ? { value: record, source: ucSource, derived: false }
+      : text ? { value: text, source: ZC_SOURCE, derived: true }
+      : { value: "", source: ucSource, derived: false };
+  const ucName = pick(toAesText(ultimate?.name), toAesText(zc?.name));
+  put("Ultimate consignee", "AD1_3", "Name", ucName.value, ucName.source, { required: true, derived: ucName.derived });
+  if (ultimate || zc) {
+    const ucCountry = ultimateCountry || cod;
+    const contactName = ultimate ? toAesPersonName([ultimate.contact, ultimate.contactLastName].filter(Boolean).join(" ")) : "";
+    const state = ultimate ? partyStateCode(ultimate, ucCountry) : { value: "" };
+    const phone = pick(ultimate ? toAesPhone(ultimate.telephone, ucCountry) : "", toAesPhone(zc?.phone, ucCountry));
+    const addr1 = pick(ultimate ? line1(ultimate) : "", toAesText(zc?.line1));
+    const addr2 = pick(ultimate ? line2(ultimate) : "", toAesText(zc?.line2));
+    const city = pick(toAesText(ultimate?.city), toAesText(zc?.city));
+    const postal = pick(ultimate ? toAesPostalCode(ultimate.zipCode, ucCountry) : "", toAesPostalCode(zc?.postal, ucCountry));
     put("Ultimate consignee", "AD1_5", "Contact name", contactName, ucSource);
-    put("Ultimate consignee", "AD1_7", "Contact phone", toAesPhone(ultimate.telephone, ultimateCountry), ucSource);
-    put("Ultimate consignee", "AD1_8", "Address line 1", line1(ultimate), ucSource, { required: true });
-    put("Ultimate consignee", "AD1_9", "Address line 2", line2(ultimate), ucSource);
-    put("Ultimate consignee", "AD1_10", "City", toAesText(ultimate.city), ucSource, { required: true });
+    put("Ultimate consignee", "AD1_7", "Contact phone", phone.value, phone.source, { derived: phone.derived });
+    put("Ultimate consignee", "AD1_8", "Address line 1", addr1.value, addr1.source, { required: true, derived: addr1.derived });
+    put("Ultimate consignee", "AD1_9", "Address line 2", addr2.value, addr2.source, { derived: addr2.derived });
+    put("Ultimate consignee", "AD1_10", "City", city.value, city.source, { required: true, derived: city.derived });
     put("Ultimate consignee", "AD1_11", "State / province", state.value, ucSource, { note: state.note });
-    put("Ultimate consignee", "AD1_12", "Country", ultimateCountry, ucSource, {
-      required: true,
-      note: toAesText(ultimate.country) && !ultimateCountry ? `"${toAesText(ultimate.country)}" isn't a recognizable country` : undefined,
-    });
-    put("Ultimate consignee", "AD1_13", "Postal code", toAesPostalCode(ultimate.zipCode, ultimateCountry), ucSource);
+    put("Ultimate consignee", "AD1_12", "Country", ucCountry,
+      recordCountry ? ucSource : textCountry ? ZC_SOURCE : "Destination country (consignee has none)", {
+        required: true,
+        derived: !recordCountry && !!textCountry,
+        note: toAesText(ultimate?.country) && !recordCountry ? `"${toAesText(ultimate?.country)}" isn't a recognizable country` : undefined,
+      });
+    put("Ultimate consignee", "AD1_13", "Postal code", postal.value, postal.source, { derived: postal.derived });
   }
-  put("Ultimate consignee", "AD1_14", "Consignee type", dv(d?.consigneeType), dv(d?.consigneeType) ? DETAILS : "—", { required: true, notInTms: true, note: "Direct consumer / Government entity / Reseller / Other-unknown" });
-  put("Ultimate consignee", "AD1_6", "Sold en route", dv(d?.soldEnRoute), dv(d?.soldEnRoute) ? DETAILS : "—", { notInTms: true, note: "Y only if the goods are sold while in transit" });
+  put("Ultimate consignee", "AD1_14", "Consignee type", "O", "Default (O = Other/Unknown)", {
+    required: true,
+    derived: true,
+    note: "Change in AESDirect if Direct consumer (D), Government (G) or Reseller (R)",
+  });
+  put("Ultimate consignee", "AD1_6", "Sold en route", "N", "Default (No)", { note: "Y only if the goods are sold while in transit" });
 
-  // ---- Sky2C as filing agent (AD3) ----
   const fwd = input.forwarder;
-  const fwdSource = fwd ? `Sky2C client record (${fwd.clientId})` : "Sky2C details not set up in TMS";
+  const fwdSource = !fwd ? "Sky2C details not set up in TMS" : fwd.clientId ? `Sky2C client record (${fwd.clientId})` : "Sky2C (built in)";
   put("Forwarding agent (Sky2C)", "AD3_2", "ID type", input.filerId ? "E" : "", "TMS settings (Sky2C filer ID)");
   put("Forwarding agent (Sky2C)", "AD3_4", "ID (filer EIN)", input.filerId, "TMS settings (Sky2C filer ID)");
   put("Forwarding agent (Sky2C)", "AD3_3", "Name", toAesText(fwd?.name), fwdSource);
@@ -380,59 +474,36 @@ export function buildWeblinkFields(input: AesMappingInput): AesMappingResult {
     put("Forwarding agent (Sky2C)", "AD3_13", "Postal code", toAesPostalCode(fwd.zipCode, fwdCountry), fwdSource);
   }
 
-  // ---- Intermediate consignee (AD4), optional ----
-  {
-    const imCountry = toCountryCode(d?.intermediateCountry ?? "");
-    const imState = (() => {
-      const raw = dv(d?.intermediateState);
-      if (!raw) return "";
-      if (imCountry === "US" || !imCountry) return toUsStateCode(raw);
-      return (imCountry === "CA" || imCountry === "MX") && /^[A-Za-z]{2}$/.test(raw) ? raw.toUpperCase() : "";
-    })();
-    const g = "Intermediate consignee";
-    put(g, "AD4_3", "Name", dv(d?.intermediateName), DETAILS);
-    put(g, "AD4_5", "Contact name", toAesPersonName(d?.intermediateContact ?? ""), DETAILS);
-    put(g, "AD4_7", "Contact phone", toAesPhone(d?.intermediatePhone ?? "", imCountry), DETAILS);
-    put(g, "AD4_8", "Address line 1", dv(d?.intermediateAddress1), DETAILS);
-    put(g, "AD4_9", "Address line 2", dv(d?.intermediateAddress2), DETAILS);
-    put(g, "AD4_10", "City", dv(d?.intermediateCity), DETAILS);
-    put(g, "AD4_11", "State / province", imState, DETAILS);
-    put(g, "AD4_12", "Country", imCountry, DETAILS);
-    put(g, "AD4_13", "Postal code", toAesPostalCode(d?.intermediatePostalCode ?? "", imCountry), DETAILS);
-  }
-
-  // ---- Goods lines (ITx_*) ----
   const items = input.containers.flatMap((c) => c.items).filter((i) =>
     toAesText(i.description) || i.declaredValueCents || i.grossWeightKgs || i.grossWeightLbs || i.isVehicle
   );
   let lineCount = 0;
   let totalValueDollars = 0;
-  const lineSource: Array<{ item: AesCargoItem | null; source: string; key: string }> =
+  const lineSource: Array<{ item: AesCargoItem | null; source: string }> =
     items.length > 0
-      ? items.slice(0, MAX_LINES).map((item, i) => ({ item, source: `Cargo item ${i + 1}`, key: item.id ?? `item${i + 1}` }))
+      ? items.slice(0, MAX_LINES).map((item, i) => ({ item, source: `Cargo item ${i + 1}` }))
       : toAesText(s.cargoDescription)
-        ? [{ item: null, source: "Shipment cargo description (no cargo items on file)", key: "desc" }]
+        ? [{ item: null, source: "Shipment cargo description (no cargo items on file)" }]
         : [];
-  const lines: AesMappingResult["lines"] = [];
 
   if (items.length > MAX_LINES) {
     rows.push({ group: "Commodity lines", code: "—", label: "Line limit", value: String(items.length), source: "Cargo", status: "warning", required: false, note: `AES allows ${MAX_LINES} lines; only the first ${MAX_LINES} are sent` });
   }
 
-  lineSource.forEach(({ item, source, key }, index) => {
-    const ld: AesLineDetails = d?.lines?.[key] ?? EMPTY_AES_LINE;
-    const lv = (v: string) => (d?.lines?.[key] ? toAesText(v) : "");
+  lineSource.forEach(({ item, source }, index) => {
     const x = index + 1;
     const group = `Line ${x}`;
     lineCount = x;
     fields[`isLine${x}`] = "Y";
 
-    const rawDescription = toAesText(item ? item.description : s.cargoDescription) ||
+    const itemDescription = item ? toAesText(item.description) : "";
+    const rawDescription = itemDescription || toAesText(s.cargoDescription) ||
       (item?.isVehicle ? [toAesText(item.vehicleMake), toAesText(item.vehicleModel)].filter(Boolean).join(" ") : "");
+    const descriptionSource = itemDescription ? source : toAesText(s.cargoDescription) ? "Commodity Detail" : source;
     const description = rawDescription.length > MAX_DESCRIPTION
       ? rawDescription.slice(0, MAX_DESCRIPTION).replace(/[\s,;:.\-/]+$/, "")
       : rawDescription;
-    put(group, `IT${x}_12`, "Commodity description", description.toUpperCase(), source, {
+    put(group, `IT${x}_12`, "Commodity description", description.toUpperCase(), descriptionSource, {
       required: true,
       warning: rawDescription.length > MAX_DESCRIPTION,
       note: rawDescription.length > MAX_DESCRIPTION ? `Truncated to ${MAX_DESCRIPTION} characters` : undefined,
@@ -440,54 +511,59 @@ export function buildWeblinkFields(input: AesMappingInput): AesMappingResult {
 
     const valueDollars = item?.declaredValueCents ? Math.round(item.declaredValueCents / 100) : 0;
     totalValueDollars += valueDollars;
-    put(group, `IT${x}_2`, "Value of goods (USD, whole dollars)", valueDollars > 0 ? String(valueDollars) : "", `${source} declared value`, { required: true });
-
-    const kg = item?.grossWeightKgs ?? (item?.grossWeightLbs ? item.grossWeightLbs * LBS_TO_KG : null);
-    const kgRounded = kg && kg > 0 ? Math.max(1, Math.round(kg)) : 0;
-    put(group, `IT${x}_7`, "Shipping weight (kg)", kgRounded > 0 ? String(kgRounded) : "", item?.grossWeightKgs ? `${source} gross kg` : `${source} gross lbs, converted to kg`, { required: true });
-
-    lines.push({ key, description: description || toAesText(item?.description) || `Line ${x}`, vehicle: !!item?.isVehicle });
-    const src = (v: string) => (v ? DETAILS : "—");
-    put(group, `IT${x}_13`, "Schedule B / HTS (10 digits)", lv(ld.scheduleB), src(lv(ld.scheduleB)), { required: true, notInTms: true });
-    put(group, `IT${x}_1`, "Export information code", lv(ld.exportInfoCode), src(lv(ld.exportInfoCode)), { required: true, notInTms: true, note: "Usually OS (all other exports)" });
-    put(group, `IT${x}_8`, "License type", lv(ld.licenseType), src(lv(ld.licenseType)), { required: true, notInTms: true, note: "e.g. C33 = no license required (NLR)" });
-    put(group, `IT${x}_21`, "Origin (Domestic/Foreign)", lv(ld.origin), src(lv(ld.origin)), { required: true, notInTms: true });
-    put(group, `IT${x}_4`, "Unit + quantity (Schedule B unit)", lv(ld.quantity1), src(lv(ld.quantity1)), {
-      notInTms: true,
-      note: lv(ld.quantity1)
-        ? undefined
-        : item?.numberOfPieces ? `TMS has ${item.numberOfPieces} ${toAesText(item.pieceType) || "piece(s)"} — enter the quantity in the Schedule B unit in AESDirect` : undefined,
+    put(group, `IT${x}_2`, "Value of goods (USD, whole dollars)", valueDollars > 0 ? String(valueDollars) : "", item ? `${source} declared value` : "Declared value (Cargo page)", {
+      required: true,
+      note: valueDollars > 0 ? undefined : "Fill in AESDirect (or add the declared value on the Cargo page)",
     });
-    // Optional line items, only if entered.
-    put(group, `IT${x}_3`, "Unit of measure 1", lv(ld.unit1), DETAILS);
-    put(group, `IT${x}_5`, "Unit of measure 2", lv(ld.unit2), DETAILS);
-    put(group, `IT${x}_6`, "Quantity 2", lv(ld.quantity2), DETAILS);
-    put(group, `IT${x}_9`, "License number / exemption", lv(ld.licenseNumber), DETAILS);
-    put(group, `IT${x}_10`, "License value (USD)", lv(ld.licenseValue), DETAILS);
-    put(group, `IT${x}_20`, "ECCN", lv(ld.eccn), DETAILS);
+
+    const itemKg = item?.grossWeightKgs ?? (item?.grossWeightLbs ? item.grossWeightLbs * LBS_TO_KG : null);
+    const shipmentKg = lineSource.length === 1 && s.grossWeightLbs && s.grossWeightLbs > 0 ? s.grossWeightLbs * LBS_TO_KG : null;
+    const kg = itemKg && itemKg > 0 ? itemKg : shipmentKg;
+    const kgRounded = kg && kg > 0 ? Math.max(1, Math.round(kg)) : 0;
+    const weightSource = itemKg && itemKg > 0 ? (item?.grossWeightKgs ? `${source} gross kg` : `${source} gross lbs, converted to kg`)
+      : shipmentKg ? "Shipment Gross Weight (lbs, converted to kg)" : `${source} gross weight`;
+    put(group, `IT${x}_7`, "Shipping weight (kg)", kgRounded > 0 ? String(kgRounded) : "", weightSource, {
+      required: true,
+      note: kgRounded > 0 ? undefined : "Fill in AESDirect (or add the Gross Weight / cargo weight in TMS)",
+    });
+
+    put(group, `IT${x}_1`, "Export information code", "OS", "Default (OS = all other exports)", {
+      required: true,
+      derived: true,
+      note: "Change to HH in AESDirect only for household goods of a person moving abroad",
+    });
+    put(group, `IT${x}_13`, "Schedule B / HTS (10 digits)", "", "—", {
+      required: true,
+      notInTms: true,
+      note: "Fill in AESDirect (TMS doesn't store Schedule B / HTS codes)",
+    });
+    put(group, `IT${x}_21`, "Origin (Domestic/Foreign)", "D", "Default (D = domestic)", {
+      required: true,
+      derived: true,
+      note: "D = made or changed in the US; F = foreign goods exported as they came in",
+    });
+    const pieces = item ? item.numberOfPieces ?? 0 : lineSource.length === 1 ? palletPieces(s.palletsDimensions) : 0;
+    put(group, `IT${x}_4`, "First quantity", pieces > 0 ? String(pieces) : "",
+      item ? `${source} pieces${toAesText(item.pieceType) ? ` (${toAesText(item.pieceType)})` : ""}` : "Pallets x Dimensions (piece count)", {
+        derived: true,
+        note: pieces > 0 ? "Number of pieces: change it in AESDirect if the Schedule B unit isn't a count (e.g. kg)" : "Fill in AESDirect",
+      });
+    put(group, `IT${x}_8`, "License type", "C33", "Default (C33 = no license required)", {
+      required: true,
+      derived: true,
+      note: "Change in AESDirect if a license or license exception applies",
+    });
 
     if (item?.isVehicle) {
       fields[`IT${x}_15`] = "Y";
       rows.push({ group, code: `IT${x}_15`, label: "Used vehicle", value: "Y", source, status: "mapped", required: false });
-      put(group, `IT${x}_16`, "Vehicle ID type", lv(ld.vehicleIdType), DETAILS);
-      put(group, `IT${x}_17`, "VIN / product ID", lv(ld.vin), src(lv(ld.vin)), { required: true, notInTms: true, note: lv(ld.vin) ? undefined : "TMS doesn't store VINs yet" });
+      put(group, `IT${x}_17`, "VIN / product ID", "", "—", { required: true, notInTms: true, note: "Fill in AESDirect (TMS doesn't store VINs)" });
       put(group, `IT${x}_18`, "Vehicle title number", toAesText(item.vehicleTitle), source);
       put(group, `IT${x}_19`, "Vehicle title state", toUsStateCode(item.vehicleState), source);
     }
 
-    // ITAR items (State Department goods only).
-    const ddtcGroup = `${group}`;
-    put(ddtcGroup, `ODTC${x}_1`, "DDTC ITAR exemption number", lv(ld.ddtcItarExemption), DETAILS);
-    put(ddtcGroup, `ODTC${x}_2`, "DDTC registration number", lv(ld.ddtcRegistration), DETAILS);
-    put(ddtcGroup, `ODTC${x}_3`, "DDTC significant military equipment (Y/N)", lv(ld.ddtcSignificantMilitary), DETAILS);
-    put(ddtcGroup, `ODTC${x}_4`, "DDTC eligible party certification (Y/N)", lv(ld.ddtcEligibleParty), DETAILS);
-    put(ddtcGroup, `ODTC${x}_5`, "DDTC USML category", lv(ld.ddtcUsmlCategory), DETAILS);
-    put(ddtcGroup, `ODTC${x}_6`, "DDTC unit of measure", lv(ld.ddtcUnit), DETAILS, { note: "Position not confirmed by CBP's mapping; the legacy app left it blank" });
-    put(ddtcGroup, `ODTC${x}_7`, "DDTC quantity", lv(ld.ddtcQuantity), DETAILS);
-
-    // EPA / USDA AMS flags.
-    put(group, `EP${x}_1`, "EPA data required (Y/N)", lv(ld.epaRequired), DETAILS, { note: lv(ld.epaRequired) === "Y" ? "Complete the EPA data in AESDirect" : undefined });
-    put(group, `AMS${x}_1`, "USDA AMS data required (Y/N)", lv(ld.amsRequired), DETAILS, { note: lv(ld.amsRequired) === "Y" ? "Complete the USDA AMS data in AESDirect" : undefined });
+    put(group, `EP${x}_1`, "EPA data required (Y/N)", "N", "Default (No)");
+    put(group, `AMS${x}_1`, "USDA AMS data required (Y/N)", "N", "Default (No)");
   });
 
   if (lineCount === 0) {
@@ -497,7 +573,6 @@ export function buildWeblinkFields(input: AesMappingInput): AesMappingResult {
     advisories.push(`Total value is $${totalValueDollars.toLocaleString("en-US")}. Shipments of $2,500 or less per product with no license usually don't need an AES filing. Check before filing.`);
   }
 
-  // ---- Containers (EQx / SNx) ----
   input.containers
     .filter((c) => toAesText(c.containerNumber))
     .forEach((c, i) => {
@@ -508,5 +583,5 @@ export function buildWeblinkFields(input: AesMappingInput): AesMappingResult {
   const counts: Record<MappingStatus, number> = { mapped: 0, derived: 0, missing: 0, "not-in-tms": 0, warning: 0 };
   for (const r of rows) if (r.required || r.status !== "missing") counts[r.status] += 1;
 
-  return { srn, fields, rows, advisories, lineCount, counts, lines };
+  return { srn, fields, rows, advisories, lineCount, counts };
 }

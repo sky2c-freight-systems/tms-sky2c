@@ -47,6 +47,15 @@ const COUNTRY_ALIASES: Record<string, string> = {
 
 let countryNameIndex: Map<string, string> | null = null;
 
+// True for a current ISO region code (not a deprecated alias such as UK or FX).
+function isCurrentRegion(code: string): boolean {
+  try {
+    return new Intl.Locale(`und-${code}`).region === code;
+  } catch {
+    return false;
+  }
+}
+
 /** Builds NAME → alpha-2 from the runtime's ICU data (Node ships full-icu), once. */
 function getCountryNameIndex(): Map<string, string> {
   if (countryNameIndex) return countryNameIndex;
@@ -62,7 +71,8 @@ function getCountryNameIndex(): Map<string, string> {
       } catch {
         name = undefined;
       }
-      if (name && name !== code) index.set(name.toUpperCase(), code);
+      // Skip old aliases (UK, FX, YU...) so names map to the ISO code.
+      if (name && name !== code && isCurrentRegion(code)) index.set(name.toUpperCase(), code);
     }
   }
   countryNameIndex = index;

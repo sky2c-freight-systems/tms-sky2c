@@ -119,6 +119,9 @@ export interface CreateClientInput extends ClientAddressInput {
   accountingEmailAddress?: string;
   contact?: string;
   contactLastName?: string;
+  exporterIdNumber?: string;
+  exporterIdType?: string;
+  scacCode?: string;
   clientType?: string;
   roles?: ClientRole[];
   creditTermsDays?: number;
@@ -154,6 +157,9 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
       accountingEmailAddress: input.accountingEmailAddress,
       contact: input.contact,
       contactLastName: input.contactLastName,
+      exporterIdNumber: input.exporterIdNumber,
+      exporterIdType: input.exporterIdType,
+      scacCode: input.scacCode,
       clientType: input.clientType,
       printableAddress: buildPrintableAddress(name, input),
       isActive: true,

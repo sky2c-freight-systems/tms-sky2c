@@ -81,6 +81,9 @@ model Client {
   accountingEmailAddress String? // billing-specific contact email; synced to the QBO Customer's invoice email instead of emailAddress when set (see ensureCustomerInQBO)
   contact         String?
   contactLastName String?
+  exporterIdNumber String?
+  exporterIdType   String?
+  scacCode         String?
   printableAddress String? // computed/cached full-address string used on documents
   isActive        Boolean @default(true)
   clientType      String? // free-form category key, resolved against LookupValue(category: "CLIENT_TYPE")

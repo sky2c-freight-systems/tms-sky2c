@@ -1,11 +1,12 @@
 import type { Client } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { escapeRegex } from "@/lib/mongoText";
-import { getAesConfig, type AesConfig } from "@/lib/aes/config";
-import { buildWeblinkFields, type AesMappingResult, type AesParty } from "@/lib/aes/weblinkFields";
+import { getAesConfig, SKY2C_AGENT, type AesConfig } from "@/lib/aes/config";
+import { buildWeblinkFields, type AesLocation, type AesMappingResult, type AesParty } from "@/lib/aes/weblinkFields";
 import { fieldsHash } from "@/lib/aes/audit";
-import { getAesDetails, type StoredAesDetails } from "@/lib/aes/aesDetailsStore";
 import { asZohoFields } from "@/lib/shipmentLayoutFields";
+import { parsePlaceText } from "@/lib/aes/places";
+import { toUsStateCode } from "@/lib/aes/codes";
 
 // Loads the shipment and builds the AES fields. Read-only.
 
@@ -19,8 +20,6 @@ export interface AesHandoff {
   mapping: AesMappingResult;
   // Status check fields, or null if no filer ID.
   inquiry: { fields: Record<string, string>; returnsToTms: boolean } | null;
-  // Saved AES details, or null.
-  details: StoredAesDetails | null;
 }
 
 // Return URL for CBP. Values go in the path because CBP adds its own "?..." params.
@@ -44,28 +43,53 @@ function toParty(c: Client | null): AesParty | null {
     telephone: c.telephone,
     contact: c.contact,
     contactLastName: c.contactLastName,
+    idNumber: c.exporterIdNumber,
+    idType: c.exporterIdType,
+    scac: c.scacCode,
   };
+}
+
+// Finds the Location a search field points at: exact name, then code, then city/name match.
+// Falls back to what the text itself says ("Los Angeles, CA", "Oakland (2811)").
+async function resolvePlace(raw: string | null | undefined, foreign = false): Promise<AesLocation | null> {
+  const text = (raw ?? "").trim();
+  if (!text) return null;
+  const parsed = parsePlaceText(text, { foreign });
+  const select = { name: true, code: true, state: true, country: true } as const;
+  const exact = (v: string) => ({ equals: escapeRegex(v), mode: "insensitive" as const });
+
+  let found = await prisma.location.findFirst({ where: { name: exact(text), isActive: true }, select });
+  if (!found && parsed.portCode) {
+    found = await prisma.location.findFirst({ where: { code: exact(parsed.portCode), isActive: true }, select });
+  }
+  if (!found && parsed.head) {
+    const candidates = await prisma.location.findMany({
+      where: { isActive: true, OR: [{ name: exact(parsed.head) }, { city: exact(parsed.head) }, { code: exact(parsed.head) }] },
+      select,
+      take: 10,
+    });
+    const fits = parsed.state ? candidates.filter((c) => !c.state || toUsStateCode(c.state) === parsed.state) : candidates;
+    // Only take it when the match is unambiguous (same port code and state).
+    const same = (c: (typeof fits)[number]) => (c.code ?? "") === (fits[0].code ?? "") && toUsStateCode(c.state) === toUsStateCode(fits[0].state);
+    if (fits.length === 1 || (fits.length > 1 && fits.every(same))) found = fits[0];
+  }
+  if (found) {
+    // Prefer a CBP port code (4-5 digits) over another kind of code such as a UN/LOCODE.
+    const isPortCode = (v: string | null | undefined) => /^\d{4,5}$/.test(v ?? "");
+    return {
+      name: found.name,
+      code: (isPortCode(found.code) ? found.code : parsed.portCode) || found.code || null,
+      state: found.state || parsed.state || null,
+      country: found.country || parsed.country || null,
+      matched: true,
+    };
+  }
+  return { name: text, code: parsed.portCode || null, state: parsed.state || null, country: parsed.country || null, matched: false };
 }
 
 async function clientById(id: string | null | undefined): Promise<Client | null> {
   if (!id) return null;
   return prisma.client.findUnique({ where: { id } });
-}
-
-// Port code from the Location table, if it looks valid.
-async function portCodeFor(names: Array<string | null | undefined>, pattern: RegExp): Promise<string> {
-  for (const raw of names) {
-    const name = (raw ?? "").trim();
-    if (!name) continue;
-    if (pattern.test(name)) return name; // already a code
-    const location = await prisma.location.findFirst({
-      where: { name: { equals: escapeRegex(name), mode: "insensitive" }, isActive: true },
-      select: { code: true },
-    });
-    const code = (location?.code ?? "").trim();
-    if (pattern.test(code)) return code;
-  }
-  return "";
 }
 
 // APP_BASE_URL, else the request host.
@@ -85,11 +109,10 @@ export async function buildAesHandoff(
   if (!shipment) return null;
 
   const config = getAesConfig();
-  const details = await getAesDetails(shipment.id);
-  const awbRaw = asZohoFields(shipment.zohoFields).cf_awb;
-  const zohoAwb = typeof awbRaw === "string" ? awbRaw : null;
+  const zoho = asZohoFields(shipment.zohoFields);
+  const zohoText = (v: unknown) => (typeof v === "string" ? v : null);
 
-  const [shipper, account, consignee, shipTo, carrier, forwarder, containers, portOfExportCode, portOfUnladingCode] =
+  const [shipper, account, consignee, shipTo, carrier, forwarder, containers, pickupLocation, originPort, destinationPort] =
     await Promise.all([
       clientById(shipment.shipperId),
       clientById(shipment.accountId),
@@ -102,11 +125,13 @@ export async function buildAesHandoff(
         include: { items: { orderBy: { id: "asc" } } },
         orderBy: { id: "asc" },
       }),
-      // Export port: 4 digits.
-      portCodeFor([shipment.placeOfReceipt, shipment.origin], /^\d{4}$/),
-      // Unloading port: 4 or 5 digits.
-      portCodeFor([shipment.placeOfDelivery, shipment.destination], /^\d{4,5}$/),
+      resolvePlace(shipment.placeOfReceipt),
+      resolvePlace(shipment.origin),
+      resolvePlace(shipment.destination, true),
     ]);
+  // Export port: 4 digits (Schedule D). Unloading port: 4-5 digits (Schedule K/D).
+  const portOfExportCode = /^\d{4}$/.test(originPort?.code ?? "") ? originPort!.code! : "";
+  const portOfUnladingCode = /^\d{4,5}$/.test(destinationPort?.code ?? "") ? destinationPort!.code! : "";
 
   const responseEmail = [opts.userEmail ?? "", config.notifyEmail].map((e) => e.trim()).filter(Boolean).join(",");
 
@@ -128,21 +153,24 @@ export async function buildAesHandoff(
       pickupScheduleAt: shipment.pickupScheduleAt,
       etaAt: shipment.etaAt,
       cargoDescription: shipment.cargoDescription,
+      grossWeightLbs: shipment.grossWeight,
       carrierPicklist: shipment.carrierPicklist,
-      zohoAwb,
+      zohoAwb: zohoText(zoho.cf_awb),
+      consigneeDetails: zohoText(zoho.cf_consignee_details),
+      palletsDimensions: shipment.palletsDimensions,
     },
     shipper: toParty(shipper),
     account: toParty(account),
     consignee: toParty(consignee),
     shipTo: toParty(shipTo),
     carrier: toParty(carrier),
-    forwarder: toParty(forwarder),
+    // Sky2C client record if set up, else the built-in Sky2C details.
+    forwarder: toParty(forwarder) ?? { ...SKY2C_AGENT },
     filerId: config.filerId,
     containers: containers.map((c) => ({
       containerNumber: c.containerNumber,
       seal1: c.seal1,
       items: c.items.map((i) => ({
-        id: i.id,
         description: i.description,
         numberOfPieces: i.numberOfPieces,
         pieceType: i.pieceType,
@@ -158,11 +186,13 @@ export async function buildAesHandoff(
     })),
     portOfExportCode,
     portOfUnladingCode,
+    pickupLocation,
+    originPort,
+    destinationPort,
     responseEmail,
     successUrl: aesReturnUrl(opts.baseUrl, "success", fileNumber, opts.nonce),
     failureUrl: aesReturnUrl(opts.baseUrl, "failure", fileNumber, opts.nonce),
     today: opts.now ?? new Date(),
-    details: details?.details ?? null,
   });
 
   // Status check. CBP only returns to https URLs.
@@ -176,5 +206,5 @@ export async function buildAesHandoff(
     };
   }
 
-  return { fileNumber, shipmentId: shipment.id, fieldsHash: fieldsHash(mapping.fields), config, mapping, inquiry, details };
+  return { fileNumber, shipmentId: shipment.id, fieldsHash: fieldsHash(mapping.fields), config, mapping, inquiry };
 }

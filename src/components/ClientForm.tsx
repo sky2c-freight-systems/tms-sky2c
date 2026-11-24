@@ -26,6 +26,9 @@ export interface ClientFormValues {
   accountingEmailAddress: string;
   contact: string;
   contactLastName: string;
+  exporterIdNumber: string;
+  exporterIdType: string;
+  scacCode: string;
   clientType: string;
   isActive: boolean;
   isShipper: boolean;
@@ -58,6 +61,9 @@ export const EMPTY_CLIENT_FORM_VALUES: ClientFormValues = {
   accountingEmailAddress: "",
   contact: "",
   contactLastName: "",
+  exporterIdNumber: "",
+  exporterIdType: "",
+  scacCode: "",
   clientType: "",
   isActive: true,
   isShipper: false,
@@ -113,6 +119,9 @@ export function clientToFormValues(client: Record<string, unknown> | null | unde
     accountingEmailAddress: str(client.accountingEmailAddress),
     contact: str(client.contact),
     contactLastName: str(client.contactLastName),
+    exporterIdNumber: str(client.exporterIdNumber),
+    exporterIdType: str(client.exporterIdType),
+    scacCode: str(client.scacCode),
     clientType: str(client.clientType),
     isActive: client.isActive !== false,
     isShipper: bool(client.isShipper),
@@ -156,6 +165,9 @@ export function clientFormValuesToCreateBody(values: ClientFormValues) {
     accountingEmailAddress: values.accountingEmailAddress || undefined,
     contact: values.contact || undefined,
     contactLastName: values.contactLastName || undefined,
+    exporterIdNumber: values.exporterIdNumber.trim() || undefined,
+    exporterIdType: values.exporterIdType || undefined,
+    scacCode: values.scacCode.trim().toUpperCase() || undefined,
     clientType: values.clientType || undefined,
     roles,
     isVendor: values.isVendor,
@@ -184,6 +196,9 @@ export function clientFormValuesToPatchBody(values: ClientFormValues) {
     accountingEmailAddress: values.accountingEmailAddress || null,
     contact: values.contact || null,
     contactLastName: values.contactLastName || null,
+    exporterIdNumber: values.exporterIdNumber.trim() || null,
+    exporterIdType: values.exporterIdType || null,
+    scacCode: values.scacCode.trim().toUpperCase() || null,
     clientType: values.clientType || null,
     isActive: values.isActive,
     isShipper: values.isShipper,
@@ -365,6 +380,45 @@ export default function ClientForm({ values, onChange, compact, disabled, client
             />
           )}
         </div>
+        {!compact && (
+          <>
+            <div>
+              <label className={labelClass}>EIN (for AES export filings)</label>
+              <input
+                className={inputClass}
+                value={values.exporterIdNumber}
+                disabled={disabled}
+                onChange={(e) => set("exporterIdNumber", e.target.value)}
+                placeholder="Only needed when this client is the exporter"
+              />
+            </div>
+            <div>
+              <label className={labelClass}>EIN Type</label>
+              <select
+                className={inputClass}
+                value={values.exporterIdType}
+                disabled={disabled}
+                onChange={(e) => set("exporterIdType", e.target.value)}
+              >
+                <option value="">—</option>
+                <option value="E">EIN</option>
+                <option value="D">DUNS</option>
+                <option value="T">Foreign entity</option>
+              </select>
+            </div>
+            <div>
+              <label className={labelClass}>SCAC (for AES export filings)</label>
+              <input
+                className={inputClass}
+                value={values.scacCode}
+                disabled={disabled}
+                maxLength={4}
+                onChange={(e) => set("scacCode", e.target.value)}
+                placeholder="Only needed when this client is a carrier"
+              />
+            </div>
+          </>
+        )}
       </div>
 
       <div>
